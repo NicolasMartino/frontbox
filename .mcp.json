@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "llm-wiki": {
+      "args": [
+        "mcp",
+        "serve"
+      ],
+      "command": "llm-wiki",
+      "env": {},
+      "type": "stdio"
+    }
+  }
+}

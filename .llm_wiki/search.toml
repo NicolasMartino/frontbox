@@ -1,0 +1,12 @@
+schema_version = 1
+updated_at = "2026-08-25T08:37:50Z"
+
+[project]
+llm_search_enabled = true
+configured_at = "2026-08-01T13:49:47Z"
+configured_by_version = "0.2.15"
+profile = "balanced"
+embedding_model = "embeddinggemma-300m-q8_0"
+query_expansion_model = "qmd-query-expansion-1.7b-q4_k_m"
+source = "project_default"
+source_install_id = "sha256:1e45005a79e7b0ca899d01784f5971d1d738bbef87d0be42f2ef5e7f7757e46e"
