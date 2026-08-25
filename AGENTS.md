@@ -10,9 +10,15 @@ cache invalidation.
 It is being extracted from RepForge's Dioxus application into a framework-neutral core with
 framework and storage adapters. The core deliberately carries no Dioxus dependency.
 
-**Current stage: research and planning.** There is no crate yet — no `Cargo.toml`, no `src/`.
-Design lives in `wiki/` as specs, proposals, and decisions. Do not begin implementation without
-an explicit go-ahead from the user.
+**Current stage: D1 implemented (2026-08-26); D2 onward still planning.** The crate exists at the
+repository root as a single package with modules matching the eventual crate split. Design lives in
+`wiki/` as specs, proposals, and decisions.
+
+Do not begin work on a later deliverable — D2 cache versioning, D3 the Dioxus adapter, D4 the
+migration trial, D5 the durable backends — without an explicit go-ahead from the user. Ordinary
+maintenance of what D1 already ships does not need one.
+
+`./scripts/verify.sh` runs every gate the roadmap requires. Run it before claiming anything works.
 
 ## Agent Role
 

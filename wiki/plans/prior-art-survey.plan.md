@@ -1,17 +1,17 @@
 # Prior-Art Survey Plan
 
 Document Class: Plan
-Status: Active
+Status: Completed
 Date: 2026-08-25
 Category: Research
 Scope: Gather external prior art before stabilizing frontbox public APIs.
-Sources: `wiki/proposals/extraction-boundary.proposal.md`, `wiki/log.md`
-Related: `wiki/proposals/extraction-boundary.proposal.md`, `wiki/roadmaps/extraction.roadmap.md`
+Sources: `wiki/proposals/extraction-boundary.proposal.md`, `wiki/references/prior-art-survey.reference.md`, `wiki/log.md`
+Related: `wiki/proposals/extraction-boundary.proposal.md`, `wiki/references/prior-art-survey.reference.md`, `wiki/roadmaps/extraction.roadmap.md`
 
 ## Deliverable
 
-This plan executes **D0a** in `wiki/roadmaps/extraction.roadmap.md`. D1 implementation depends on
-it; D1 planning does not.
+This plan executed **D0a** in `wiki/roadmaps/extraction.roadmap.md`. D1 implementation was gated
+on it; D1 planning was not. The survey is complete as of 2026-08-25.
 
 ## Objective
 
@@ -57,6 +57,33 @@ replay is a good design or simply what RepForge found convenient to build.
   storage, and framework integration.
 - A short proposal update identifying any frontbox API changes required before D1 implementation.
 
+## Outcome
+
+Completed in `wiki/references/prior-art-survey.reference.md` and promoted into
+`wiki/proposals/extraction-boundary.proposal.md`.
+
+The survey did not replace frontbox's extraction boundary, but it raised follow-up questions before
+public API freeze:
+
+- optional caller-owned operation metadata,
+- explicit local namespace/scope identity,
+- monotonic enqueue sequence before durable backends,
+- attempt/error aging for retained work,
+- and durable storage format versioning.
+
+`wiki/plans/d1-core-cache-runtime.plan.md` `## D0a Follow-Up` splits these by when they must be
+settled: the first two can be foreclosed by a public D1 API, the rest can wait for durable backends.
+
+### Limitation Of This Plan's System List
+
+The system list below was drawn from local-first and offline-first sync engines, eight of which
+replicate *state*. frontbox replays *HTTP commands*. Verification on 2026-08-26 found that the
+omission produced a wrong headline finding, and added a fifth source note covering Workbox
+Background Sync, Redux Offline, TanStack Query offline mutations, and Amplify DataStore. A future
+survey should choose its cohort from the shape of the artifact under test, not from the topic
+label. The 2024-2026 local-first cohort (Triplit, LiveStore, TanStack DB, InstantDB, Jazz) remains
+unsurveyed and is recorded as a known gap.
+
 ## Out Of Scope
 
 - Benchmarking.
@@ -68,3 +95,8 @@ replay is a good design or simply what RepForge found convenient to build.
 
 The survey is complete when every listed system has at least one primary source cited, the
 comparison table exists, and the extraction boundary proposal has been updated with the outcome.
+
+Checked 2026-08-25, re-checked 2026-08-26: met. The re-check found two cited URLs dead and one
+claim attributed to a page that did not contain it; both are fixed and recorded in
+`raw/research/2026-08-25-prior-art-survey/manifest.md` `## Verification Pass`. Restating the
+criterion rather than asserting its own satisfaction keeps it testable on the next lint pass.

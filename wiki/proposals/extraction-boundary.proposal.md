@@ -5,8 +5,9 @@ Status: Proposed
 Date: 2026-08-25
 Category: Architecture
 Scope: Where to draw the line between a reusable cache/sync core, persistence backends, a Dioxus adapter, and RepForge application code.
-Sources: `raw/initial/2026-08-25T083750Z/sources`, `wiki/specs/source-frontend-cache-architecture.spec.md`
-Related: `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/decisions/001-single-threaded-core.decision.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/plans/prior-art-survey.plan.md`
+Sources: `raw/initial/2026-08-25T083750Z/sources`, `raw/research/2026-08-25-prior-art-survey`, `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/references/prior-art-survey.reference.md`
+Verified: 2026-08-26 prior-art verification pass; see the reference page's `## Revision Note`.
+Related: `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/references/prior-art-survey.reference.md`, `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/decisions/001-single-threaded-core.decision.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/plans/prior-art-survey.plan.md`
 
 ## Problem
 
@@ -31,6 +32,11 @@ implied exactly the Dioxus coupling this proposal avoids.
 
 If the first implementation milestone needs less workspace overhead, start as one crate with
 modules matching those boundaries and split crates after the APIs settle.
+
+**D1 took that route (2026-08-26).** One crate, `frontbox`, at the repository root, with `error`,
+`id`, `scope`, `clock`, `record`, `protocol`, `store`, `transport`, `runner`, `memory`, and
+`testing` modules. The split into `frontbox-core` and the backend and adapter crates waits until the
+public API has survived the D4 migration trial.
 
 ## Extract To Core
 
@@ -141,12 +147,61 @@ The first extracted API should favor explicit traits and typed envelopes over ma
 system shows useful runtime semantics, but review found several source defects. The first API must
 therefore port source shapes selectively, not faithfully.
 
-## Prior-Art Gap
+## Prior-Art Survey Outcome
 
-Every current conclusion is based on RepForge's implementation and product specs. Before public
-API stabilization, the project still needs a focused survey of Replicache/Zero, PowerSync,
-ElectricSQL, RxDB, WatermelonDB, PouchDB, and Automerge/Yjs. That work is tracked in
-`wiki/plans/prior-art-survey.plan.md`.
+D0a is complete. See `wiki/references/prior-art-survey.reference.md`. The survey covered
+Replicache/Zero, PowerSync, Electric/ElectricSQL, RxDB, WatermelonDB, PouchDB/CouchDB, Automerge,
+and Yjs, plus the HTTP command-queue cohort added during verification: Workbox Background Sync,
+Redux Offline, TanStack Query offline mutations, and AWS Amplify DataStore.
+
+The survey does not require replacing the extraction boundary before D1.
+
+**The envelope is standard for frontbox's cohort.** The 2026-08-25 draft concluded that raw
+HTTP-envelope replay is uncommon in mature systems. Verification on 2026-08-26 narrowed that: it is
+true of systems that replicate *state*, and false of systems that persist a client-side queue of
+*commands*. Named mutators work when the operation body lives in code on both ends. A persisted
+queue cannot rely on that, because, as TanStack Query documents, "only the state of mutations is
+persisted, as functions cannot be serialized." Workbox stores a serialized `Request`; Redux Offline
+stores `effect: {url, method, json, headers}`. frontbox's `method`/`path`/`body` envelope is the
+mainstream answer to that constraint, not a RepForge convenience, and it needs no special defense.
+
+**frontbox's outcome model is the most recoverable in its cohort.** Replicache, Zero, Redux
+Offline, and Amplify DataStore all reach the same terminal-versus-transient decision point, and all
+discard or roll back the terminal case. frontbox dead-letters it. Workbox, which has no such split,
+requeues any failure "in the same position in the queue" indefinitely — the head-of-line wedge
+decision 005 exists to avoid.
+
+Required follow-up before public API freeze:
+
+- ~~Consider optional caller-owned operation metadata~~ **Settled 2026-08-26** by
+  `wiki/decisions/008-mutation-envelope-extensibility.decision.md`. Acceptance met on both
+  branches: records carry an optional `OperationMeta { name, version }` *and* are
+  `#[non_exhaustive]` with constructor-based creation, so further fields stay additive.
+- ~~Make local namespace/scope identity explicit~~ **Settled 2026-08-26** by
+  `wiki/decisions/009-local-scope-identity.decision.md`. Acceptance met: no store constructor exists
+  without a `ScopeKey`, and D1 test 22 asserts that two scopes cannot observe each other's records.
+- Keep D1 no-progress reporting and decide whether retained work needs attempt count, last-error,
+  or aging metadata after D1 proves the basic runner. Acceptance: the decision cites Redux Offline's
+  `retry() -> null` discard and Workbox's `maxRetentionTime` as reference designs, and states
+  whether frontbox dead-letters or discards at the bound. frontbox should dead-letter.
+- Revisit monotonic enqueue sequence before durable backends make ordering a storage-compatibility
+  surface. Acceptance: the decision records that the supporting prior art is Replicache alone, and
+  that CouchDB, RxDB, and PowerSync were withdrawn as evidence on verification.
+- Treat durable storage format and migration behavior as public compatibility surface once SQLite
+  or IndexedDB backends exist. Acceptance: a format version is persisted from the first durable
+  write, not added later.
+
+D1 implementation is no longer blocked by missing prior-art research, but it still requires
+explicit user authorization.
+
+### Known Limits Of This Survey
+
+- The original cohort excluded frontbox's nearest peers. That is corrected, but the survey was
+  wrong once about how unusual frontbox is and its conclusions should be read as narrow.
+- The 2024-2026 local-first cohort was not surveyed. Triplit ships an explicit offline outbox and
+  LiveStore is a deterministic mutation log; both bear directly on the metadata and ordering
+  questions above.
+- Replicache, the survey's single strongest source, is an archived project.
 
 ## Resolved Decisions
 
@@ -167,14 +222,33 @@ ElectricSQL, RxDB, WatermelonDB, PouchDB, and Automerge/Yjs. That work is tracke
 - **Direct dispatch** - application-owned, not a core send path. See the section above.
 - **Batch ordering** - `(created_at, mutation_id)` for D1, giving determinism without claiming
   causality: `wiki/plans/d1-core-cache-runtime.plan.md`.
+- **Envelope extensibility and operation metadata** - non-exhaustive constructor-built records,
+  parsed JSON body, optional uninterpreted `OperationMeta`:
+  `wiki/decisions/008-mutation-envelope-extensibility.decision.md`.
+- **Local scope identity** - required opaque `ScopeKey`, stamped on records, enforced on read,
+  retained on mismatch: `wiki/decisions/009-local-scope-identity.decision.md`.
+- **Batch wire format** - compatible with the source server's payload, which pins `chrono` alongside
+  `serde_json` into the compatibility surface:
+  `wiki/decisions/010-batch-wire-format.decision.md`.
 
 ## Open Decisions
 
 - Whether cache version state should be persisted by default. Currently in-memory only.
 - Whether mutation ordering needs a monotonic sequence number for genuine causal ordering. D1's
-  `(created_at, mutation_id)` tie-break settles determinism only; a sequence column would be a D5
-  schema change.
+  `(created_at, mutation_id)` tie-break settles determinism only. The prior-art survey raises this
+  to a durable-backend priority, but on one precedent: Replicache, where a mutation id
+  "describe[s] a causal order to mutations from this client, and that order is respected by the
+  server." CouchDB, RxDB, and PowerSync were withdrawn as evidence on verification.
 - Whether local read model persistence belongs in core or should be a companion trait implemented
   by each app.
-- Whether to build a retry/backoff policy at all, and on what evidence.
-- Whether quarantine is a distinct store or a status in a single outbox table.
+- Whether to build attempt count, last-error, aging, or retry/backoff policy beyond the D1
+  no-progress signal. Reference designs exist: Redux Offline's `retry() -> null` discard over a
+  1s-to-1h schedule, Workbox's `maxRetentionTime`, and Amplify's `outboxStatus{isEmpty}`.
+- Whether quarantine is a distinct store or a status in a single outbox table. No surveyed
+  local-first system settles this; the pattern's prior art is message-broker poison-message
+  handling.
+- How durable backends encode a `ScopeKey` into a physical storage name. Decision 009 requires an
+  injective encoding; the source's character replacement is not one, and collapses distinct scopes
+  onto one database for any non-UUID identifier.
+- Whether a cross-scope diagnostic is needed. Decision 009 retains work under scopes no store
+  currently opens, which D1's no-progress signal cannot see.

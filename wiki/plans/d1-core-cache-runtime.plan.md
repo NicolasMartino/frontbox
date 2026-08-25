@@ -1,12 +1,12 @@
 # D1 Core Cache Runtime Plan
 
 Document Class: Plan
-Status: Active
+Status: Completed
 Date: 2026-08-25
 Category: Implementation Preparation
 Scope: Prepare the first extraction slice: a framework-neutral outbox and sync runtime with an in-memory backend and conformance tests.
-Sources: `raw/initial/2026-08-25T083750Z/sources`, `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/references/source-test-inventory.reference.md`
-Related: `wiki/roadmaps/extraction.roadmap.md`, `wiki/decisions/001-single-threaded-core.decision.md`, `wiki/decisions/002-error-model.decision.md`, `wiki/decisions/003-atomic-outcome-application.decision.md`, `wiki/decisions/004-transport-auth-and-offline.decision.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/006-corrupt-record-policy.decision.md`, `wiki/plans/prior-art-survey.plan.md`
+Sources: `raw/initial/2026-08-25T083750Z/sources`, `raw/research/2026-08-25-prior-art-survey`, `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/references/source-test-inventory.reference.md`, `wiki/references/prior-art-survey.reference.md`
+Related: `wiki/roadmaps/extraction.roadmap.md`, `wiki/references/prior-art-survey.reference.md`, `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/decisions/001-single-threaded-core.decision.md`, `wiki/decisions/002-error-model.decision.md`, `wiki/decisions/003-atomic-outcome-application.decision.md`, `wiki/decisions/004-transport-auth-and-offline.decision.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/006-corrupt-record-policy.decision.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/plans/prior-art-survey.plan.md`
 
 ## Objective
 
@@ -14,10 +14,12 @@ Define the first implementation slice before code starts: a framework-neutral ou
 runtime that keeps RepForge's useful protocol shapes while correcting the source defects found
 during review.
 
-Implementation has not started. Do not create `Cargo.toml`, `src/`, or tests until the user gives
-explicit implementation authorization. D1 implementation is additionally gated on D0a, the
-prior-art survey (`wiki/plans/prior-art-survey.plan.md`), because that survey may still change
-public API shapes. Refining this plan is not gated.
+**Implemented 2026-08-26** under explicit user authorization. The crate exists at the repository
+root; see `## Implementation Outcome` at the end of this page for what was built, what the
+implementation forced the design to change, and what it found that this plan had wrong.
+
+D0a, the prior-art survey (`wiki/references/prior-art-survey.reference.md`), is complete. It did not
+replace the D1 runtime shape, but it raised follow-up questions that remain open into D5.
 
 ## Inputs
 
@@ -30,11 +32,15 @@ public API shapes. Refining this plan is not gated.
 - `wiki/specs/source-frontend-cache-architecture.spec.md`
 - `wiki/proposals/extraction-boundary.proposal.md`
 - `wiki/references/source-test-inventory.reference.md`
+- `wiki/references/prior-art-survey.reference.md`
+- `raw/research/2026-08-25-prior-art-survey/sources/05-http-command-queues.md` - frontbox's nearest
+  peer cohort; the closest structural matches are Redux Offline and Workbox Background Sync
 
 ## D1 Deliverables
 
 - Core mutation id type.
-- Generic mutation envelope: HTTP method, path, JSON body, and client timestamp.
+- Generic mutation envelope: HTTP method, path, parsed JSON body, client timestamp, optional
+  operation metadata, and the store's scope key (decisions 008 and 009).
 - Core batch request and response types.
 - Mutation result status enum.
 - Core remote rejection payload, replacing the RepForge-only `ApiError` dependency.
@@ -42,6 +48,7 @@ public API shapes. Refining this plan is not gated.
 - Clock abstraction for deterministic timestamps, including `rejected_at`.
 - Outbox persistence trait with bounded pending batches, total ordering, and atomic outcome
   application.
+- Required scope key on every store constructor, stamped on records and enforced on read.
 - Dead-letter read/count/purge trait.
 - Corrupt-record quarantine path, including a backend-owned sweep for rows with no usable
   `MutationId`, and counts that keep quarantined records out of the pending total.
@@ -53,7 +60,7 @@ public API shapes. Refining this plan is not gated.
 
 ## Proposed Core Shapes
 
-Revised per decisions 001-006:
+Revised per decisions 001-009:
 
 - No `type Error` per trait; all traits use the core `Error`.
 - No `Send` bounds; backends are generic parameters, never `dyn` trait objects in v0.
@@ -65,12 +72,55 @@ Revised per decisions 001-006:
 - Corrupt records have an explicit quarantine path, addressable and id-less.
 - Pending ordering is total: `(created_at, mutation_id)`, not `created_at` alone.
 - Retained work is observable: a sync that drains nothing says so.
+- Records are `#[non_exhaustive]` and constructor-built, so fields can be added without a
+  breaking change.
+- The body is parsed `serde_json::Value`, so a malformed body cannot enter the outbox.
+- Store identity is a required, caller-composed `ScopeKey`; there is no unscoped constructor.
 
 ```rust
 pub struct RemoteRejection {
     pub code: Option<String>,
     pub message: String,
     pub details: Option<serde_json::Value>,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct ScopeKey(String);
+
+impl ScopeKey {
+    /// Rejects an empty key with `Error::InvalidScopeKey`.
+    pub fn new(key: impl Into<String>) -> Result<Self, Error>;
+    pub fn as_str(&self) -> &str;
+}
+
+#[non_exhaustive]
+pub struct OperationMeta {
+    pub name: String,
+    pub version: Option<String>,
+}
+
+/// What a caller enqueues, and the wire representation of it (decision 010).
+#[non_exhaustive]
+pub struct MutationIntent {
+    pub mutation_id: MutationId,
+    pub method: String,
+    pub path: String,
+    pub created_at: i64,   // serialized as `client_datetime`, RFC 3339
+    pub body: serde_json::Value,
+    pub op: Option<OperationMeta>,
+}
+
+/// What a store returns. Built only by `OutboxRecord::stamp(intent, scope)`, so the scope
+/// cannot be supplied by a caller. See decision 008's 2026-08-26 amendment.
+#[non_exhaustive]
+pub struct OutboxRecord {
+    pub mutation_id: MutationId,
+    pub method: String,
+    pub path: String,
+    pub body: serde_json::Value,
+    pub created_at: i64,
+    pub op: Option<OperationMeta>,
+    pub scope: ScopeKey,
 }
 
 pub trait Clock {
@@ -90,15 +140,20 @@ pub struct Outcome {
 }
 
 pub trait OutboxStore {
-    async fn enqueue(&self, record: OutboxRecord) -> Result<(), Error>;
+    fn scope(&self) -> &ScopeKey;
+
+    /// Stamps this store's scope on the record. A caller cannot supply one.
+    async fn enqueue(&self, intent: MutationIntent) -> Result<(), Error>;
 
     /// Oldest-first by `(created_at, mutation_id)`. The compound key makes ordering
     /// total and reproducible without adding a schema column; see Ordering Policy.
+    /// Records stamped with a different `ScopeKey` are never returned (decision 009).
     async fn pending_batch(&self, limit: usize) -> Result<Vec<OutboxRecord>, Error>;
 
-    /// Count of decodable pending records only. Quarantined rows are excluded here and
-    /// reported by `QuarantineStore::count`, so a wedged record can never hide inside a
-    /// pending total.
+    /// Count of decodable pending records in this store's scope only. Quarantined rows
+    /// are excluded here and reported by `QuarantineStore::count`, so a wedged record can
+    /// never hide inside a pending total, and records under another `ScopeKey` are never
+    /// counted here (decision 009).
     async fn pending_count(&self) -> Result<usize, Error>;
 
     /// Backend-owned scan for rows that cannot be decoded into an `OutboxRecord` or
@@ -154,9 +209,22 @@ Adding `mutation_id` as the tie-break makes the order total, reproducible, and i
 backends, with no new schema column and no clock dependency. It buys determinism, not causality:
 `MutationId` is a random UUID, so same-millisecond ties resolve stably but arbitrarily.
 
+**The tie-break constrains the durable schema, which this plan originally did not say.**
+`MutationId: Ord` compares the UUID's 16 bytes. Lowercase canonical hyphenated hex compares in the
+same sequence as those bytes, so a SQLite `ORDER BY created_at, mutation_id` over a `TEXT` column
+reproduces the in-memory order exactly — but only if the stored text is that form. Storing uppercase
+hex, an unhyphenated form, or a BLOB in a different byte order silently produces a different order
+on that backend, which is the class of cross-backend disagreement the tie-break exists to remove.
+D5 owes this a conformance assertion, not just a convention.
+
 If real causal ordering is required, the answer is a monotonic sequence number assigned at enqueue.
-That remains open and belongs with the durable backends in D5, because it does add a column. D1
-must not assert causal ordering it does not provide.
+That remains open. It was originally deferred to durable backends in D5 because it adds a column.
+D0a raises its priority, but on narrower evidence than the first draft claimed: Replicache is the
+only surveyed system that documents per-client causal operation order, where a mutation id
+"describe[s] a causal order to mutations from this client, and that order is respected by the
+server." CouchDB sequence IDs are database-scoped, RxDB checkpoints are resume tokens, and
+PowerSync documents FIFO without a published causal operation ID. D1 must not assert causal
+ordering it does not provide.
 
 `DeadLetterStore::insert` remains absent from the public surface. A dead letter is a transition
 from a known pending record after a server verdict, not a free-standing write.
@@ -202,6 +270,31 @@ The D1 test suite should then cover:
 21. A `Pending` prefix longer than `limit` keeps later records unsent, and this is observable
     through the no-progress signal rather than silent. Documents the head-of-line behavior instead
     of pretending it cannot happen.
+22. **Cross-scope records are invisible.** A record enqueued under scope A is absent from scope
+    B's `pending_batch`, absent from B's `pending_count`, dead-letter count, and quarantine count,
+    and is still present and syncable when a store is reopened under A. Proves decision 009's
+    enforcement rule and its retain-on-mismatch rule in one pass.
+23. An empty `ScopeKey` is rejected at construction with `Error::InvalidScopeKey`.
+24. `OperationMeta` survives every transition: a record enqueued with `op` set carries it into the
+    dead letter on `Rejected` and into quarantine on a corrupt-record transition. Core never reads
+    `name` to make a decision.
+25. A body that is not valid JSON never enters the outbox. **Refined during implementation:** this
+    is not a rejection at `enqueue`, because there is no code path to reject. `MutationIntent` holds
+    a parsed `serde_json::Value`, so a malformed body is not a value that exists and the failure
+    happens before an intent can be constructed. The residual corrupt-body surface is durable
+    corruption after a successful write, which is cases 15 and 18.
+26. A `created_at` outside the range the wire format can express is a corrupt record, not a panic
+    and not a mid-batch serialization failure. New: added because decision 010 routes timestamps
+    through `chrono`.
+27. An intent with no `op` serializes to exactly the five keys the source protocol defines, with
+    `client_datetime` as the expected RFC 3339 string, and round-trips. Setting `op` adds the key
+    and only then. New: this is the assertion that makes decision 010 checkable.
+28. `sync_once` re-entered while a pass is in flight returns without sending, so a periodic loop
+    overlapping a manual trigger cannot double-send a batch. New: ports the source's
+    compare-exchange guard (`persistence/mutations.rs:612-621`) into a testable form.
+29. Scope keys are compared exactly. Keys differing only by surrounding whitespace or case are
+    distinct scopes and cannot see each other's records. New: normalization would be non-injective,
+    which is the same collapse decision 009 flags for backend storage-name encoding.
 
 ## Out Of Scope For D1
 
@@ -214,9 +307,43 @@ The D1 test suite should then cover:
 - Dead-letter recovery UI or retry workflows.
 - Generic read-model storage beyond the mutation outbox/dead-letter/quarantine path.
 
+## D0a Follow-Up
+
+The prior-art survey does not block D1 implementation. Its follow-ups split by *when they must be
+settled*, which is not the same as when they are implemented. Two were shape decisions that a public
+D1 API could foreclose; both were settled on 2026-08-26. Three can wait for durable backends.
+
+### Settled Before The D1 Public API Freezes
+
+Both shape questions a published D1 API could foreclose are now decided.
+
+- **Caller-owned operation metadata** - `wiki/decisions/008-mutation-envelope-extensibility.decision.md`.
+  Records are `#[non_exhaustive]` and constructor-built, the body is parsed `serde_json::Value`, and
+  an optional `OperationMeta { name, version }` rides along. Core stores and moves it; core never
+  branches on it in D1.
+- **Local namespace/scope identity** - `wiki/decisions/009-local-scope-identity.decision.md`. Every
+  store constructor takes a required, non-empty, caller-composed `ScopeKey`. There is no unscoped
+  constructor. Records are stamped, reads verify, and a mismatch retains rather than discards.
+
+Decision 008 lands before 009: stamping a scope key on records is additive only because the records
+are already non-exhaustive.
+
+### Can Wait For Durable Backends (D5)
+
+- **Monotonic enqueue sequence.** Adds a column, so it belongs with durable storage. Evidence is
+  one system: Replicache's causally ordered per-client mutation id. D1 must continue to not assert
+  causal ordering it does not provide.
+- **Attempt count, last-error, or aging metadata for retained work.** D1's no-progress signal is
+  the minimum. Reference designs: Redux Offline's `retry() -> null` discard over a 1s-to-1h
+  schedule, Workbox's `maxRetentionTime`, Amplify's `outboxStatus{isEmpty}`. If frontbox adopts a
+  bound, it should dead-letter at the bound rather than discard, per decision 005.
+- **Durable storage format versioning.** Applies once SQLite or IndexedDB backends exist, but the
+  version must be written from the *first* durable write, not added afterwards. RxDB's migration of
+  replication metadata so clients need not restart replication is the reference case.
+
 ## Verification Gates For Implementation
 
-When implementation is authorized, D1 is not complete until:
+All gates below passed on 2026-08-26 via `scripts/verify.sh`. D1 was not complete until:
 
 - the in-memory conformance tests pass,
 - the adapted source tests from `persistence/mutations.rs` are represented,
@@ -229,11 +356,69 @@ When implementation is authorized, D1 is not complete until:
 - no `Send` bound is required by public core traits,
 - and the D1 outcome is promoted back into the spec and log.
 
+The prose gates — no Dioxus, no RepForge entity names, no `Send` bound — are enforced by `grep` in
+`scripts/verify.sh` rather than left as intentions. The `Send` gate is textual by necessity: a
+type-level assertion can prove a bound is *satisfied*, never that it is *absent*. It is backed by
+`tests/not_send.rs`, where `InMemoryStore` — which holds `Rc`s and is therefore `!Send` —
+implements all three storage traits. That would not compile if any trait required `Send`.
+
 ## Constraints
 
 - The user owns Git state. Do not stage, commit, reset, or otherwise write Git state.
 - Do not modify `raw/`; it is immutable provenance.
-- Do not begin implementation before explicit authorization.
+- Do not begin implementation before explicit authorization. D1 was authorized 2026-08-26; this
+  still binds D2 onward.
 - Treat `08-offline-sync.spec.md` as normative when it conflicts with `mutations.rs`.
 - Keep all source divergences visible in the docs until implementation tests prove the new
-  behavior.
+  behavior. Discharged for D1: every divergence now has a named conformance case, tabulated in
+  `wiki/specs/source-frontend-cache-architecture.spec.md` under `## D1 Extraction Outcome`.
+
+## Implementation Outcome
+
+Implemented 2026-08-26. One crate, `frontbox`, at the repository root, with modules matching the
+future crate split rather than a workspace, per the extraction-boundary proposal.
+
+### What was built
+
+`MutationId`, `ScopeKey`, `Error`, `Clock`/`SystemClock`/`ManualClock`, the record types, the batch
+protocol, the three storage traits, `SyncTransport`, `SyncRunner`, a complete in-memory backend with
+failure injection, and a backend-agnostic conformance suite behind a `testing` feature.
+
+43 tests pass: 28 conformance cases, 1 fault-injection case, 2 `!Send` proofs, 11 source-oracle
+ports, and 1 doctest. Both wasm builds and clippy on both targets are clean.
+
+### What implementation changed
+
+- **The enqueue input and the stored record are two types.** Decision 008's single `OutboxRecord`
+  could not also satisfy decision 009's stamping rule. Recorded as an amendment on decision 008.
+- **A new decision, 010**, pinning the batch wire format to the source server's payload and
+  therefore pinning `chrono` alongside `serde_json` into the compatibility surface.
+- **`chrono` is depended on without its `clock` feature**, so `Utc::now()` does not compile in this
+  crate. Decision 002's clock-injection rule is now enforced by the build rather than by review.
+- **`MutationId: Ord` constrains the D5 durable schema.** See the Ordering Policy above.
+
+### What implementation found that this plan had wrong
+
+- **Case 25 was mis-specified.** It asked for a rejection at `enqueue`; a parsed body makes the
+  malformed case unrepresentable, so there is nothing to reject. Corrected above.
+- **"Port the 12 tests in `persistence/mutations.rs`" overstates what is portable.** Six of the
+  twelve assert RepForge route construction and have no counterpart in a domain-neutral library.
+  The `frontend/dto.rs` round-trip tests turned out to be the more valuable oracle, because they pin
+  the wire format decision 010 commits to. Recorded in `tests/source_oracle.rs` and in
+  `wiki/references/source-test-inventory.reference.md`.
+- **The source's `SyncStatus` does not transfer.** It is four sticky booleans read back in priority
+  order, and the source's own test has to reach into private atomics to set them up — the status is
+  not reachable through its public API. `SyncReport` reports per pass instead of holding sticky
+  state.
+- **The in-memory backend deliberately holds every scope in one store.** Scope enforcement has to
+  hold when two scopes share physical storage, because that is exactly the D5 hazard decision 009
+  names. A backend modelled as one-store-per-scope would have made case 22 pass for the wrong
+  reason.
+
+### Carried into D5
+
+- Injective `ScopeKey` encoding for storage names, plus the `MutationId` textual-form constraint
+  above.
+- Durable storage format versioning, written from the first durable write.
+- The conformance suite itself: `StoreFactory` and `FaultInjection` are the seams SQLite and
+  IndexedDB implement to run these same 29 cases.

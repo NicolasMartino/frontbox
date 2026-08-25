@@ -6,7 +6,7 @@ Date: 2026-08-25
 Category: API Shape
 Scope: How authentication reaches the sync transport, and how the runner distinguishes being offline from a failed request.
 Sources: `raw/initial/2026-08-25T083750Z/sources/persistence/mutations.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/types.rs`
-Related: `wiki/decisions/002-error-model.decision.md`, `wiki/specs/source-frontend-cache-architecture.spec.md`
+Related: `wiki/decisions/002-error-model.decision.md`, `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/references/prior-art-survey.reference.md`
 
 ## Decision
 
@@ -81,3 +81,25 @@ invent credentials or treat missing auth as network loss.
 A real product needs multiple principals sharing one durable outbox. That would be a different
 privacy and partitioning requirement, and likely needs per-principal storage namespaces before any
 per-record auth field is considered.
+
+## Prior-Art Support
+
+Added 2026-08-26 from D0a (`wiki/references/prior-art-survey.reference.md`). The survey did not
+contradict this decision.
+
+- **No surveyed system persists credentials inside queued records.** Across both cohorts, auth is
+  resolved at send time from ambient session state, never snapshotted per queued write.
+- **Redux Offline** is the closest match to frontbox's shape and puts token refresh at exactly this
+  seam. Its documented async `discard` calls `refreshAccessToken()` on a `401` and returns `false`
+  so the request retries with a fresh token, rather than treating the 401 as terminal. That is
+  frontbox's rule in another codebase: auth failure is a property of the *attempt*, not of the
+  queued record.
+- **PowerSync** and **Zero** both scope access through authenticated parameters resolved per
+  connection, and PowerSync warns that client-supplied parameters must not be trusted for
+  authorization on their own.
+
+The 401-as-transient case is worth noting against decision 005: a `401` is an HTTP client error but
+is not a terminal application refusal. Redux Offline's default discards all 4xx, and its own docs
+override that for 401. frontbox's `Rejected` status is a server verdict rather than a status-code
+class, which sidesteps the problem — but any future status-code-derived classification must not
+treat `401` as `Rejected`.

@@ -6,7 +6,7 @@ Date: 2026-08-25
 Category: Sync Semantics
 Scope: How frontbox maps server mutation statuses to durable outbox dispositions.
 Sources: `raw/initial/2026-08-25T083750Z/sources/08-offline-sync.spec.md`, `raw/initial/2026-08-25T083750Z/sources/persistence/mutations.rs`
-Related: `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/decisions/003-atomic-outcome-application.decision.md`, `wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/plans/prior-art-survey.plan.md`
+Related: `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/decisions/003-atomic-outcome-application.decision.md`, `wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/plans/prior-art-survey.plan.md`, `wiki/references/prior-art-survey.reference.md`
 
 ## Decision
 
@@ -83,6 +83,56 @@ must make it observable rather than silent, so:
 Attempt counters, aging, and skip-past policies remain deliberately out of D1. They are the natural
 fix if a real product hits a stall, and the no-progress signal is what will show whether that
 happens.
+
+## Prior-Art Support
+
+Added 2026-08-26 from D0a (`wiki/references/prior-art-survey.reference.md`). This decision has the
+strongest external support of any in the project, and the survey did not contradict it.
+
+**The terminal-versus-transient split is near-universal.** Replicache's server-push reference
+states the rule frontbox arrived at independently:
+
+> "If a mutation is invalid or cannot be handled, the server must still mark the mutation as
+> processed by updating the `lastMutationID`. Otherwise, the client will keep trying to send the
+> mutation and be blocked forever."
+
+> "If a permanent error is encountered such that the mutation will never be appliable, ignore that
+> mutation and increment the `lastMutationID`. If a temporary error is encountered that might be
+> resolved on retry, halt processing mutations and return."
+
+Redux Offline resolves every request to "success and commit, temporary failure and retry, and
+permanent failure and rollback." Zero skips throwing mutators, reverts the optimistic effect, and
+lets later mutations proceed. Amplify DataStore's conflict handler returns a `DISCARD` sentinel.
+PowerSync keeps transient failures queued and asks backends to return 2xx for validation failures
+so the queue is not blocked.
+
+**frontbox's version is the most recoverable in the cohort.** All four peers above *discard* or
+*roll back* the terminal case. frontbox dead-letters it, preserving the record for inspection and
+user action. That is a deliberate improvement, not a divergence.
+
+**Workbox Background Sync is the counterexample that proves the point.** It has no
+terminal/transient distinction: a failed request "is put back in the same position in the queue,"
+indefinitely, bounded only by `maxRetentionTime`. That is exactly the head-of-line wedge this
+decision exists to prevent, shipped in the browser platform's own background-sync library.
+
+**Retaining `Blocked` is independently supported.** Electric documents its own rejected-write
+rollback as "very naive... clearing all local state and writes in the event of any write being
+rejected by the server," and suggests implementers may prefer clearing "only the set of writes that
+are causally dependent on the rejected operation." A `Blocked` record is precisely a write that was
+never evaluated on its own merits, so dead-lettering it would be the naive behavior Electric warns
+against.
+
+**The unbounded-retention gap has shipped reference designs.** This decision deliberately leaves
+out attempt counters and aging. Prior art shows what a bound looks like when frontbox wants one:
+Redux Offline's `retry()` returns a delay or "`null` if the action should be discarded" over a
+1s-to-1h schedule, after which "it will be discarded"; Workbox uses `maxRetentionTime`; Amplify
+emits `outboxStatus{isEmpty}` plus enqueued/processed/failed events. If frontbox adopts a bound it
+should dead-letter at that bound rather than discard, consistent with the policy above.
+
+**One caution on status-code classification.** `Rejected` is a server verdict, not an HTTP status
+class, and it must stay that way. Redux Offline's default treats all 4xx as permanent, and its own
+documentation immediately overrides that for `401`, refreshing the token and retrying. See
+`wiki/decisions/004-transport-auth-and-offline.decision.md`.
 
 ## Revisit If
 

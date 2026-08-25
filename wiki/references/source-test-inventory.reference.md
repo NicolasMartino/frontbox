@@ -6,7 +6,7 @@ Date: 2026-08-25
 Category: Source Corpus
 Scope: Test inventory from the copied RepForge source corpus, used as the conformance oracle for extraction planning.
 Sources: `raw/initial/2026-08-25T083750Z/sources`
-Related: `wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/references/repforge-cache-source-corpus.reference.md`
+Related: `wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/references/repforge-cache-source-corpus.reference.md`, `wiki/decisions/010-batch-wire-format.decision.md`
 
 ## Summary
 
@@ -42,12 +42,36 @@ Total: 130.
 
 ## D1 Priority
 
-Port the 12 tests from `persistence/mutations.rs` first. They sit closest to the reusable outbox
-runtime and should become the initial conformance suite.
+**Corrected 2026-08-26, after D1 was implemented.** The original guidance was to port the 12 tests
+from `persistence/mutations.rs` first. In practice only six transferred:
 
-Do not port them blindly. At least one source behavior is now considered wrong for extraction:
-`Blocked` currently follows the `Rejected` dead-letter path, but D1 retains it according to
-`wiki/decisions/005-mutation-outcome-policy.decision.md`.
+| Source test | Ported as |
+| --- | --- |
+| `mutation_is_pending_tracks_outbox_membership` | `pending_membership_tracks_the_outbox` |
+| `enqueue_put_user_preferences_with_id_preserves_caller_supplied_mutation_id` | `a_caller_supplied_mutation_id_is_preserved` |
+| `purge_dead_letters_removes_only_expired_records` | `purge_removes_only_expired_dead_letters` |
+| `apply_sync_results_moves_rejected_and_blocked_mutations_to_dead_letter` | `blocked_is_retained_where_the_source_dead_letters_it` — **inverted** |
+| `sync_status_reports_priority_order`, `test_sync_status_default` | `each_pass_reports_what_it_did` |
+| `refresh_pending_count_reloads_external_outbox_changes` | `pending_count_needs_no_refresh` |
+
+The other six — `typed_request_intents_map_supported_workout_routes`,
+`typed_request_intents_map_preferences_and_exercise_routes`,
+`typed_request_intents_map_translation_routes`,
+`remove_pending_exercise_draft_mutations_only_removes_matching_create_update`, and
+`enqueue_additional_variants_and_clear_pending_cover_route_shapes` — assert RepForge route
+construction, which a domain-neutral library has no counterpart for.
+
+**The higher-value oracle was `frontend/dto.rs`.** Its five round-trip tests pin the wire format,
+which `wiki/decisions/010-batch-wire-format.decision.md` commits to preserving byte for byte. Four
+of the five ported directly; the fifth (`test_mutation_batch_request_new_sets_client_timestamp`)
+became an exact assertion rather than a `>=` one, because the timestamp is now a parameter instead
+of an internal `Utc::now()` call.
+
+The `Blocked` divergence stands as originally warned: the source dead-letters it, D1 retains it per
+`wiki/decisions/005-mutation-outcome-policy.decision.md`, and the ported test asserts the opposite
+of the source's on purpose.
+
+All ports live in `tests/source_oracle.rs`.
 
 ## Later Priority
 

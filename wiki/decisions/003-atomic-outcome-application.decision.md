@@ -6,7 +6,7 @@ Date: 2026-08-25
 Category: API Shape
 Scope: How the outbox applies server verdicts, and why dead-lettering and deletion must commit together.
 Sources: `raw/initial/2026-08-25T083750Z/sources/persistence/mutations.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/native.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/web.rs`
-Related: `wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/decisions/002-error-model.decision.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`
+Related: `wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/decisions/002-error-model.decision.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/references/prior-art-survey.reference.md`
 
 ## Decision
 
@@ -85,3 +85,21 @@ Both target backends can support the atomic transition.
 A target storage engine cannot atomically transition across two logical stores. The acceptable
 fallback is a single physical table with a status column, not a return to unchecked two-step
 writes.
+
+## Prior-Art Support
+
+Added 2026-08-26 from D0a (`wiki/references/prior-art-survey.reference.md`). The survey did not
+contradict this decision and supplies two independent supports:
+
+- **WatermelonDB** documents the same hazard from the opposite side. Its sync implementation warns
+  "do not mark record as synced if it changed locally since fetch local changes step (user could
+  have made new changes that need syncing)." Applying an outcome must not clear state the caller
+  has modified since the batch was built. Its backend contract likewise requires a push to abort
+  transactionally rather than partially apply, and notes that unsafe per-collection batching breaks
+  that transactionality.
+- **RxDB** requires backends to tolerate duplicate transmissions, because retries after a partial
+  failure are expected. Atomic application plus idempotence is the combination that survives a
+  torn write.
+
+No surveyed system applies outcomes as a non-transactional remove-plus-insert. This decision stands
+as written.

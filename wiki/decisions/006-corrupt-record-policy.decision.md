@@ -6,7 +6,7 @@ Date: 2026-08-25
 Category: Storage Semantics
 Scope: How frontbox handles local outbox and dead-letter records that cannot be decoded or converted into sync intents.
 Sources: `raw/initial/2026-08-25T083750Z/sources/persistence/mutations.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/native.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/web.rs`
-Related: `wiki/decisions/002-error-model.decision.md`, `wiki/decisions/003-atomic-outcome-application.decision.md`
+Related: `wiki/decisions/002-error-model.decision.md`, `wiki/decisions/003-atomic-outcome-application.decision.md`, `wiki/references/prior-art-survey.reference.md`
 
 ## Decision
 
@@ -55,3 +55,32 @@ counts, never be sent, never be deleted, and never reach a user-visible dead-let
 The implementation chooses a single physical table with status columns rather than separate
 outbox/dead-letter/quarantine stores. The policy remains the same: corrupt records must become
 visible and recoverable, not silently ignored.
+
+## Prior-Art Support
+
+Added 2026-08-26 from D0a (`wiki/references/prior-art-survey.reference.md`).
+
+**No surveyed system contradicts this decision, and none implements it.** Across both cohorts —
+Replicache, Zero, PowerSync, Electric, RxDB, WatermelonDB, PouchDB/CouchDB, Automerge, Yjs, Workbox
+Background Sync, Redux Offline, TanStack Query, and Amplify DataStore — no official documentation
+describes a first-class per-record quarantine for corrupt local durable data. RxDB and WatermelonDB
+document malformed *endpoint* data and backend validation duties, which is a different problem.
+
+**The pattern is borrowed, not invented.** Poison-message quarantine is long established in message
+brokers: SQS redrive policies, Azure Service Bus dead-letter queues, and equivalent Kafka patterns
+all move an undecodable or repeatedly failing message out of the processing path while preserving
+it for inspection. frontbox is applying a mature server-side pattern to a client durable queue.
+State this framing rather than claiming novelty — the earlier draft of the survey called quarantine
+a frontbox improvement unsupported by prior art, which was an artifact of surveying only
+local-first systems.
+
+**Quarantine and dead letters must stay distinct, and prior art shows why.** PowerSync documents
+optional server-side dead letters and warns this "could result in out-of-order updates if the
+client continues sending updates, despite earlier updates being persisted in the dead-letter
+queue." A dead letter is a server verdict on a well-formed record; quarantine is a local integrity
+failure on a record the server never saw. Collapsing them would make the ordering hazard worse and
+would misreport local corruption as server refusal.
+
+**Related open question.** Whether quarantine is a distinct store or a status column remains open
+(see `wiki/proposals/extraction-boundary.proposal.md`). No surveyed system settles it, because none
+implements the pattern.

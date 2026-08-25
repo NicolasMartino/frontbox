@@ -5,8 +5,8 @@ Status: Active
 Date: 2026-08-25
 Category: Extraction
 Scope: Deliverable sequence for extracting the cache runtime, ordered so the core API is validated by a real migration before the persistence backends are ported.
-Sources: `wiki/proposals/extraction-boundary.proposal.md`, `wiki/specs/source-frontend-cache-architecture.spec.md`
-Related: `wiki/proposals/extraction-boundary.proposal.md`, `wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/plans/prior-art-survey.plan.md`
+Sources: `wiki/proposals/extraction-boundary.proposal.md`, `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/references/prior-art-survey.reference.md`
+Related: `wiki/proposals/extraction-boundary.proposal.md`, `wiki/references/prior-art-survey.reference.md`, `wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/plans/prior-art-survey.plan.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/decisions/010-batch-wire-format.decision.md`
 
 ## Goal
 
@@ -19,8 +19,8 @@ The migration trial is the only real test of whether the extracted API is right,
 before the full SQLite and IndexedDB backend ports. Porting both durable backends first would move
 roughly 2,300 lines of backend code before any real application flow validates the API.
 
-The roadmap also keeps implementation behind explicit authorization. As of 2026-08-25, the
-project is still in planning; there is no crate, no `Cargo.toml`, and no `src/`.
+The roadmap also keeps implementation behind explicit authorization. D0, D0a, and D1 are complete
+as of 2026-08-26; the crate exists at the repository root. D2 onward remain unauthorized.
 
 ### D0 - Project Knowledge
 
@@ -55,15 +55,16 @@ Unlocks:
 
 ### D0a - Prior-Art Survey
 
-Status: Active
+Status: Completed
 Promise: The frontbox design is checked against established offline-first systems before any public
 API is written, so known traps are caught on paper rather than after implementation.
 Depends On: D0
 Execution Plan: `wiki/plans/prior-art-survey.plan.md`
 
 Included:
-- Review Replicache/Zero, PowerSync, ElectricSQL, RxDB, WatermelonDB, PouchDB/CouchDB, and
-  Automerge/Yjs.
+- Review Replicache/Zero, PowerSync, Electric/ElectricSQL, RxDB, WatermelonDB, PouchDB/CouchDB,
+  and Automerge/Yjs, plus the HTTP command-queue cohort that frontbox actually belongs to:
+  Workbox Background Sync, Redux Offline, TanStack Query offline mutations, and Amplify DataStore.
 - Answer the eight design questions in the plan, in particular how mature systems handle malformed
   local durable data, blocked/pending outcome vocabularies, and cache fallback that must not leak
   data across users, tenants, or languages.
@@ -74,34 +75,44 @@ Excluded:
 - Replacing accepted decisions without direct contradictory evidence.
 
 Proof:
-- A reference page under `wiki/references/` cites at least one primary source per system.
-- A comparison table covers write model, conflict model, invalidation, batching, retry, storage, and
-  framework integration.
-- `wiki/proposals/extraction-boundary.proposal.md` records the outcome, including "no changes
-  required" if that is the finding.
+- `wiki/references/prior-art-survey.reference.md` cites at least one primary source per system,
+  with every URL verified reachable and dead links replaced by archived snapshots.
+- The comparison table covers write model, conflict model, invalidation/scope,
+  batching/retry/stall, storage, and framework integration.
+- `wiki/proposals/extraction-boundary.proposal.md` records the outcome and frontbox follow-up,
+  including "no changes required" where that is the finding.
+- Systems deliberately not surveyed are named, so the cohort boundary is explicit.
 
 Promotion Target:
 - `wiki/proposals/extraction-boundary.proposal.md`
-- Any decision page the survey contradicts.
+- Any decision page the survey contradicts or independently supports. Decisions 003, 004, 005, and
+  006 carry `## Prior-Art Support` sections from this survey; none was contradicted.
+- Decisions 008 and 009, written 2026-08-26, are new pages the survey produced rather than pages it
+  annotated. Both settle public-API shapes before D1 can freeze them.
 
 Unlocks:
-- D1 implementation authorization.
+- Decisions 008 and 009, the two API-shape questions the survey raised.
+- D1 implementation authorization, subject to explicit user approval.
 
 ### D1 - Core Runtime Skeleton
 
-Status: Active
+Status: Completed
 Promise: A framework-neutral in-memory outbox runtime can enqueue, sync, classify outcomes, retain
 blocked work, dead-letter rejected work, quarantine corrupt records, and pass conformance tests.
-Depends On: D0 and D0a. D1 planning is complete and may continue to be refined, but implementation
-does not start until D0a reports and the user authorizes code.
+Depends On: D0, completed D0a, and decisions 008 and 009, which settle the two public-API shapes a
+published D1 could otherwise foreclose. Implementation was authorized and completed on 2026-08-26;
+decision 010 was written during it.
 Execution Plan: `wiki/plans/d1-core-cache-runtime.plan.md`
 
 Included:
-- Core mutation id, envelope, batch request/response, and status types.
+- Core mutation id, envelope, batch request/response, and status types. The envelope is
+  non-exhaustive and constructor-built, carries a parsed JSON body and optional
+  `OperationMeta`, and is stamped with the store's `ScopeKey` (decisions 008 and 009).
 - Core `RemoteRejection` payload instead of RepForge `ApiError`.
 - Non-exhaustive core `Error`.
 - Clock abstraction.
 - Outbox, dead-letter, quarantine, and transport traits.
+- Required `ScopeKey` on every store constructor, enforced on every read.
 - Bounded pending batches with total `(created_at, mutation_id)` ordering.
 - Atomic outcome application.
 - Backend-owned corrupt-record sweep for rows with no usable `MutationId`.
@@ -115,21 +126,31 @@ Excluded:
 - Cache versioning.
 - Retry/backoff policy beyond status classification.
 
-Proof:
+Proof (all met 2026-08-26, via `scripts/verify.sh`):
 - Native build passes.
-- `wasm32-unknown-unknown` build passes.
-- In-memory conformance tests pass.
-- No Dioxus or RepForge entity names in core.
+- `wasm32-unknown-unknown` build passes, with and without default features.
+- In-memory conformance tests pass: 28 cases plus 1 fault-injection case.
+- No Dioxus or RepForge entity names in core, checked by `grep` rather than by intent.
 - `Blocked` clears on the sync after its blocker is dead-lettered, proving decision 005's liveness
-  argument rather than assuming it.
+  argument rather than assuming it. Conformance case 19.
+- Two scopes cannot observe each other's records, and a scope-mismatched record is retained rather
+  than dropped, proving decision 009 rather than documenting it. Conformance case 22, run against a
+  backend where both scopes share physical storage.
+- The wire payload matches the source protocol byte for byte. Conformance case 27 plus the
+  `frontend/dto.rs` ports in `tests/source_oracle.rs`.
 
 Promotion Target:
 - `wiki/specs/source-frontend-cache-architecture.spec.md`
-- `wiki/compatibility/` once public API exists
+- `wiki/decisions/010-batch-wire-format.decision.md`, written during implementation.
+- `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, amended during implementation.
+- `wiki/compatibility/` once a release is contemplated. `serde_json` and `chrono` are both public
+  compatibility surface (decision 010).
 
 Unlocks:
 - D2 cache versioning.
 - D4 migration trial preparation.
+- D5, which inherits the `StoreFactory` and `FaultInjection` conformance seams rather than having to
+  invent a cross-backend test strategy.
 
 ### D2 - Cache Version And Invalidation Runtime
 
@@ -238,6 +259,10 @@ Execution Plan: Not created yet.
 Included:
 - SQLite backend for native targets.
 - IndexedDB backend for web targets.
+- Injective encoding from `ScopeKey` to a physical storage name, and storage of `mutation_id` in
+  lowercase canonical hyphenated form so backend ordering matches core's (decision 009 and the D1
+  plan's Ordering Policy).
+- The D1 conformance suite, run through `StoreFactory` and `FaultInjection` on both backends.
 - Atomic `apply_outcomes` spanning outbox, dead-letter, and quarantine transitions.
 - Bounded pending queries with deterministic ordering policy.
 - Corrupt-record visibility instead of silent row loss.

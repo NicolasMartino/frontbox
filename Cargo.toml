@@ -1,0 +1,39 @@
+[package]
+name = "frontbox"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"           # AFIT needs 1.75; the conformance suite uses `Waker::noop`
+description = "Offline-first cache and mutation outbox for Rust frontends"
+repository = "https://github.com/nicolasmartino/frontbox"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+keywords = ["offline-first", "outbox", "sync", "cache", "wasm"]
+categories = ["caching", "database", "wasm"]
+publish = false
+
+[dependencies]
+# `default-features = false` deliberately drops chrono's `clock` feature, so `Utc::now()`
+# does not compile anywhere in this crate. Time enters only through `Clock` (decision 002),
+# and the wasm build stays free of `js-sys`/`iana-time-zone`.
+chrono = { version = "0.4", default-features = false, features = ["serde", "alloc"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+# `v4` is opt-in (though on by default) because core never generates a `MutationId`:
+# the caller supplies it, which is what makes application-owned direct dispatch
+# expressible. Building `--no-default-features` proves core needs no randomness backend.
+uuid = { version = "1", default-features = false, features = ["serde"] }
+
+[dev-dependencies]
+pollster = "0.4"
+# Doctests compile as external crates, so these need to be reachable there too.
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[features]
+default = ["v4"]
+v4 = ["uuid/v4", "uuid/js"]
+testing = []
+
+[package.metadata.docs.rs]
+all-features = true

@@ -6,7 +6,7 @@ Date: 2026-08-25
 Category: Architecture
 Scope: What RepForge's frontend cache actually does today, verified against the copied source corpus, as the factual basis for extraction.
 Sources: `raw/initial/2026-08-25T083750Z/sources`
-Related: `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/006-corrupt-record-policy.decision.md`, `wiki/decisions/007-generic-entity-key-registry.decision.md`, `wiki/references/source-test-inventory.reference.md`
+Related: `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/006-corrupt-record-policy.decision.md`, `wiki/decisions/007-generic-entity-key-registry.decision.md`, `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/references/source-test-inventory.reference.md`, `wiki/plans/d1-core-cache-runtime.plan.md`
 
 ## Summary
 
@@ -34,6 +34,34 @@ The persistence layer selects a backend at compile time:
   helpers (`persistence/mod.rs:23-50`). There is no exported `PreferencesStore`. Theme helpers are
   not in that re-export block; they live in `persistence/preferences.rs` and are reached through the
   `preferences` module path (`persistence/mod.rs:11`).
+
+### Store Identity And User Isolation (as observed)
+
+Each backend exposes two constructors, one isolated per user and one shared:
+
+| Backend | Isolated | Legacy shared |
+| --- | --- | --- |
+| Native | `open_for_user(user_id)` opens `{user_id}.db` (`persistence/native.rs:86`) | `open()` opens `app.db` (`persistence/native.rs:70`) |
+| Web | `init_db_for_user(user_id)` opens `repforge_{user_id}` (`persistence/web.rs:89`) | `init_db()` opens `repforge_app` (`persistence/web.rs:81`) |
+
+The isolated constructors carry the stated intent "Each user gets their own database file to ensure
+data isolation" and "This ensures data isolation after logout/login cycles"
+(`persistence/native.rs:85`, `persistence/native.rs:62`).
+
+Two properties of this design matter for extraction:
+
+- **The shared constructors still exist.** Isolation holds only where every call site chose the
+  per-user variant. A logout/login cycle on a device with pending outbox records can replay the
+  previous user's mutations under the new user's credentials on any path that opened the shared
+  database.
+- **Sanitization is not injective.** Both backends map the user id through
+  `replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")` (`persistence/native.rs:65`,
+  `persistence/web.rs:33`). The comments note this is safe because the ids are UUIDs. For any
+  non-UUID identifier it is not: two distinct ids can collapse to the same storage name.
+
+Isolation is keyed on `user_id` alone. Tenant, schema version, and read scope play no part in local
+storage identity. See `wiki/decisions/009-local-scope-identity.decision.md` for how frontbox
+diverges.
 
 ### Durable Record Model (as observed)
 
@@ -289,3 +317,33 @@ adapters or examples.
 Because the persisted envelope is already domain-neutral HTTP, the boundary falls naturally: the
 queue, the sync loop, and the status machine are reusable after correcting the source defects; only
 the layer that constructs envelopes is domain-bound.
+
+## D1 Extraction Outcome
+
+Added 2026-08-26, after D1 was implemented. This page continues to record what the **source** does;
+this section records which of those behaviours the extracted library kept, corrected, or dropped,
+and which conformance case proves it. Nothing above was rewritten — the source facts stand as
+observed.
+
+| Source behaviour | frontbox D1 | Proof |
+| --- | --- | --- |
+| `Blocked` dead-lettered with `Rejected` (`mutations.rs:270`) | Retained; only `Rejected` dead-letters | Cases 4, 19; `blocked_is_retained_where_the_source_dead_letters_it` |
+| Whole outbox loaded as one batch (`mutations.rs:513-514`) | Bounded `pending_batch(limit)` | Cases 10, 21 |
+| Dead-letter insert then separate discarded delete (`mutations.rs:281,658`) | One atomic `apply_outcomes` | Case 9 |
+| Malformed rows hidden by `filter_map(...ok())` (`native.rs:269`, `web.rs:112`) | Quarantine plus a backend-owned `sweep_corrupt` | Cases 15, 18, 26 |
+| `pub type StoreError = String` (`types.rs:12`) | One non-exhaustive structured `Error` | Compile-time |
+| `Utc::now()` inside record constructors (`types.rs:88`) | Injected `Clock`; `chrono` without its `clock` feature, so `Utc::now()` does not compile | Case 13 |
+| `ORDER BY created_at` with no tie-break (`native.rs:253`, `web.rs:115`) | Total `(created_at, mutation_id)` order | Cases 11, 12 |
+| Scoped and unscoped constructors side by side (`native.rs:70`/`:86`, `web.rs:81`/`:89`) | Required `ScopeKey`, no unscoped constructor, enforced on every read, retained on mismatch | Cases 22, 23, 29 |
+| Body stored as pre-serialized text (`types.rs:23`) | Parsed `serde_json::Value`, so a malformed body is unrepresentable | Case 25 |
+| Pending count cached in an `AtomicUsize` needing explicit refresh | Read from storage per call | `pending_count_needs_no_refresh` |
+| Sticky `SyncStatus` booleans read in priority order (`mutations.rs:61,334-345`) | Per-pass `SyncReport`, with an explicit no-progress signal | Cases 7, 20; `each_pass_reports_what_it_did` |
+| `MutationIntentDto` wire shape (`dto.rs:96-108`) | Preserved byte for byte | Case 27; the `dto.rs` ports in `tests/source_oracle.rs` |
+
+Two source behaviours were deliberately **not** carried and remain out of scope: typed per-route
+enqueue helpers, and direct-dispatch-with-fallback, which stays application-owned.
+
+One observation about the source's own tests belongs here. `sync_status_reports_priority_order`
+sets up its scenario by writing directly to `store.inner.is_offline` and `store.inner.is_error` —
+private atomics. A status that can only be arranged by reaching past the public API is a status the
+public API does not expose, which is why `SyncStatus` did not transfer as a shape.
