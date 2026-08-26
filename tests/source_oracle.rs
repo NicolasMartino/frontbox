@@ -6,18 +6,31 @@
 //!
 //! # What did not transfer
 //!
-//! The source's `persistence/mutations.rs` has twelve tests. Six of them assert RepForge route
+//! The source's `persistence/mutations.rs` has twelve tests. Five assert RepForge route
 //! construction — `typed_request_intents_map_supported_workout_routes`,
 //! `typed_request_intents_map_preferences_and_exercise_routes`,
 //! `typed_request_intents_map_translation_routes`,
-//! `remove_pending_exercise_draft_mutations_only_removes_matching_create_update`,
-//! `enqueue_additional_variants_and_clear_pending_cover_route_shapes`, and
-//! `test_sync_status_default` — and have no counterpart in a domain-neutral library. The project's
-//! test inventory says to "port the 12 tests"; in practice half of them are about a domain this
-//! crate deliberately does not have.
+//! `remove_pending_exercise_draft_mutations_only_removes_matching_create_update`, and
+//! `enqueue_additional_variants_and_clear_pending_cover_route_shapes` — and have no counterpart in
+//! a domain-neutral library, because typed enqueue helpers live in the application. The other seven
+//! ported into the six tests below; `test_sync_status_default` and `sync_status_reports_priority_order`
+//! collapse into one.
 //!
 //! The more valuable oracle turned out to be `frontend/dto.rs`, whose round-trip tests pin the wire
-//! format this crate has to keep speaking.
+//! format this crate has to keep speaking. Those live in `tests/dto_oracle.rs`.
+//!
+//! # Two kinds of test live here
+//!
+//! **Genuine oracles**, which would fail if this crate drifted: the dead-letter purge and
+//! caller-supplied id preservation here, and the whole of `tests/dto_oracle.rs`. These assert
+//! behaviour the source and this crate share.
+//!
+//! **Divergence records**, which assert the *opposite* of the source and exist so the divergence
+//! cannot be undone silently: `blocked_is_retained_where_the_source_dead_letters_it`,
+//! `pending_count_needs_no_refresh`, `each_pass_reports_what_it_did`, and
+//! `the_client_timestamp_is_supplied_not_captured`. Their value is the doc comment as much as the
+//! assertion — each records what the source did and why this crate does otherwise. That is a
+//! legitimate use of a test, but it is not an oracle, and the distinction is worth keeping visible.
 
 use frontbox::{
     Clock, DeadLetterStore, Disposition, InMemoryBackend, ManualClock, MutationBatchRequest,
@@ -191,19 +204,16 @@ fn blocked_is_retained_where_the_source_dead_letters_it() {
 
         let runner = SyncRunner::new(
             store,
-            ScriptedOnce::new(MutationBatchResponse {
-                results: vec![
-                    MutationResult::new(id(1), MutationStatus::Rejected).with_error(
-                        frontbox::RemoteRejection::new("bad request")
-                            .with_code("mutation_rejected"),
-                    ),
-                    MutationResult::new(id(2), MutationStatus::Blocked).with_error(
-                        frontbox::RemoteRejection::new("blocked behind failure")
-                            .with_code("mutation_blocked"),
-                    ),
-                    MutationResult::new(id(3), MutationStatus::Duplicate),
-                ],
-            }),
+            ScriptedOnce::new(MutationBatchResponse::new(vec![
+                MutationResult::new(id(1), MutationStatus::Rejected).with_error(
+                    frontbox::RemoteRejection::new("bad request").with_code("mutation_rejected"),
+                ),
+                MutationResult::new(id(2), MutationStatus::Blocked).with_error(
+                    frontbox::RemoteRejection::new("blocked behind failure")
+                        .with_code("mutation_blocked"),
+                ),
+                MutationResult::new(id(3), MutationStatus::Duplicate),
+            ])),
         );
 
         let report = runner.sync_once().await.expect("sync");
@@ -268,9 +278,10 @@ fn each_pass_reports_what_it_did() {
         // Queued, sent, and ruled on.
         let completed = SyncRunner::new(
             backend.open(store.scope().clone()),
-            ScriptedOnce::new(MutationBatchResponse {
-                results: vec![MutationResult::new(id(1), MutationStatus::Applied)],
-            }),
+            ScriptedOnce::new(MutationBatchResponse::new(vec![MutationResult::new(
+                id(1),
+                MutationStatus::Applied,
+            )])),
         );
         let report = completed.sync_once().await.expect("completed");
         assert_eq!(report.pass, SyncPass::Completed);
@@ -312,113 +323,6 @@ fn pending_count_needs_no_refresh() {
 }
 
 // ---------------------------------------------------------------------------
-// Ported from frontend/dto.rs — the wire-format oracle
-// ---------------------------------------------------------------------------
-
-/// Source: `test_mutation_id_serialization_roundtrip`.
-#[test]
-fn mutation_id_round_trips() {
-    let original = id(0x1234_5678);
-    let json = serde_json::to_string(&original).expect("serialize");
-    let back: MutationId = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(original, back);
-    assert_eq!(
-        json,
-        format!("\"{original}\""),
-        "serialized as a bare string"
-    );
-}
-
-/// Source: `test_mutation_intent_roundtrip`.
-#[test]
-fn mutation_intent_round_trips() {
-    let intent = MutationIntent::new(
-        id(1),
-        "PATCH",
-        "/api/v1/exercises/123",
-        serde_json::json!({ "name": "Bench Press" }),
-        1_700_000_000_000,
-    );
-
-    let json = serde_json::to_string(&intent).expect("serialize");
-    let back: MutationIntent = serde_json::from_str(&json).expect("deserialize");
-
-    assert_eq!(back.mutation_id, id(1));
-    assert_eq!(back.method, "PATCH");
-    assert_eq!(back.path, "/api/v1/exercises/123");
-    assert_eq!(back.body, serde_json::json!({ "name": "Bench Press" }));
-    assert_eq!(back.created_at, 1_700_000_000_000);
-}
-
-/// Source: `test_mutation_batch_request_and_response_roundtrip`.
-#[test]
-fn batch_request_and_response_round_trip() {
-    let request = MutationBatchRequest {
-        mutations: vec![MutationIntent::new(
-            id(1),
-            "PUT",
-            "/api/v1/me/preferences",
-            serde_json::json!({ "default_rest_seconds": 120 }),
-            1_700_000_000_000,
-        )],
-    };
-    let json = serde_json::to_string(&request).expect("serialize");
-    let back: MutationBatchRequest = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(request, back);
-
-    let response = MutationBatchResponse {
-        results: vec![MutationResult::new(id(1), MutationStatus::Applied)],
-    };
-    let json = serde_json::to_string(&response).expect("serialize");
-    let back: MutationBatchResponse = serde_json::from_str(&json).expect("deserialize");
-    assert_eq!(response, back);
-}
-
-/// Source: `test_mutation_batch_request_new_sets_client_timestamp`.
-///
-/// The source asserts `client_datetime >= before`, which is all you can assert when the constructor
-/// calls `Utc::now()` itself. Here the timestamp is a parameter, so the assertion is exact — and
-/// `Utc::now()` does not compile in this crate, because `chrono` is depended on without its `clock`
-/// feature precisely to keep it that way.
-#[test]
-fn the_client_timestamp_is_supplied_not_captured() {
-    let clock = ManualClock::new(1_700_000_000_123);
-    let intent = MutationIntent::new(
-        id(1),
-        "POST",
-        "/api/v1/things",
-        serde_json::json!({ "name": "Morning Workout" }),
-        clock.now_ms(),
-    );
-
-    assert_eq!(intent.created_at, 1_700_000_000_123);
-
-    let value = serde_json::to_value(&intent).expect("serialize");
-    assert_eq!(
-        value["client_datetime"],
-        serde_json::json!("2023-11-14T22:13:20.123Z")
-    );
-}
-
-/// A server refusal deserializes from the source's `ApiError` shape unchanged.
-///
-/// The source sends `{ "code": ..., "message": ... }`. This crate's payload adds an optional
-/// `details`, and makes `code` optional so a server that refuses without one is still usable.
-#[test]
-fn the_source_api_error_shape_still_deserializes() {
-    let response: MutationBatchResponse = serde_json::from_str(
-        r#"{"results":[{"mutation_id":"00000000-0000-0000-0000-000000000001",
-             "status":"Rejected",
-             "error":{"code":"invalid_input","message":"Title is required"}}]}"#,
-    )
-    .expect("deserialize the source's response shape");
-
-    let error = response.results[0].error.as_ref().expect("error");
-    assert_eq!(error.code.as_deref(), Some("invalid_input"));
-    assert_eq!(error.message, "Title is required");
-    assert_eq!(error.details, None);
-}
-
 // ---------------------------------------------------------------------------
 
 /// A transport that answers with one canned response, or refuses to send.

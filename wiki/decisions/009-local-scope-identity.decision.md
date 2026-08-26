@@ -39,6 +39,17 @@ Five binding rules:
    scope into one key is the caller's job. Core never parses it, never orders by it, never derives
    authorization from it.
 
+**Only the empty key is rejected.** A whitespace-only key such as `" "` or `"\n"` is valid, and is a
+distinct scope from every other key. Rejecting it would mean core deciding which key *contents* are
+meaningful, which is the same normalization judgment rule 5 rules out — and it would catch almost
+nothing, because the realistic composition bug is `format!("user:{id}")` with an empty `id`, which
+yields `"user:"`: non-empty, meaningful-looking, and equally wrong. A caller that needs its keys
+validated should validate them where it knows what they mean, before building a `ScopeKey`.
+Conformance case 29 asserts that keys differing only by surrounding whitespace or case stay
+distinct, and the unit tests in `src/scope.rs` cover the pairs a normalizer would merge — including
+the source's own `tenant/1` / `tenant_1` collision. `ScopeKey`'s own docs carry a runnable example
+of the caller-side validation this paragraph asks for, so the recommendation is not left abstract.
+
 ## Why
 
 **The source has this defect today, and the spec does not record it.** Both backends ship two

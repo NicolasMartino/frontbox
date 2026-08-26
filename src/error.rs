@@ -149,3 +149,107 @@ impl Error {
         matches!(self, Self::Offline)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error as _;
+
+    fn underlying() -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::BrokenPipe, "socket closed")
+    }
+
+    /// Offline is the one failure the runner treats as "not an attempt", so nothing else may
+    /// answer to it. This is the predicate the whole offline-vs-transport distinction rests on.
+    #[test]
+    fn only_offline_is_offline() {
+        assert!(Error::Offline.is_offline());
+
+        for other in [
+            Error::transport(underlying()),
+            Error::transport_opaque(),
+            Error::storage(underlying()),
+            Error::storage_opaque(),
+            Error::corrupt(MutationId::from_uuid(uuid::Uuid::from_u128(1)), "bad"),
+            Error::corrupt_unidentified("unreadable id"),
+            Error::protocol("two verdicts"),
+            Error::invalid_scope_key("empty"),
+        ] {
+            assert!(!other.is_offline(), "{other:?} must not read as offline");
+        }
+    }
+
+    /// An implementor may keep the platform failure or drop it, and both have to survive `?`.
+    ///
+    /// The `_opaque` constructors exist for backends that have nothing worth boxing. Asserting the
+    /// chain both ways is what keeps them from quietly becoming the only shape anyone uses.
+    #[test]
+    fn an_underlying_failure_is_reachable_when_one_was_kept() {
+        let kept = Error::transport(underlying());
+        assert_eq!(
+            kept.source().expect("a source was supplied").to_string(),
+            "socket closed"
+        );
+
+        assert!(Error::transport_opaque().source().is_none());
+        assert!(Error::storage_opaque().source().is_none());
+        assert_eq!(
+            Error::storage(underlying())
+                .source()
+                .expect("a source was supplied")
+                .to_string(),
+            "socket closed"
+        );
+    }
+
+    /// A serialization failure keeps the serde error, which is the only way to say *what* failed.
+    #[test]
+    fn a_serialization_failure_keeps_the_serde_error() {
+        let serde_error = serde_json::from_str::<serde_json::Value>("{ not json")
+            .expect_err("this is not valid JSON");
+        let error = Error::serialization(serde_error);
+
+        assert_eq!(error.to_string(), "serialization failure");
+        assert!(error.source().is_some(), "the serde error is the source");
+    }
+
+    /// The reason travels in the message for the variants that carry one, and the opaque variants
+    /// deliberately do not name a cause they were not given.
+    #[test]
+    fn messages_carry_the_reason_when_there_is_one() {
+        assert_eq!(Error::Offline.to_string(), "offline");
+        assert_eq!(Error::transport_opaque().to_string(), "transport failure");
+        assert_eq!(Error::storage_opaque().to_string(), "storage failure");
+        assert_eq!(
+            Error::protocol("two verdicts for one id").to_string(),
+            "protocol violation: two verdicts for one id"
+        );
+        assert_eq!(
+            Error::invalid_scope_key("scope key must not be empty").to_string(),
+            "invalid scope key: scope key must not be empty"
+        );
+        assert_eq!(
+            Error::corrupt_unidentified("unparseable mutation_id").to_string(),
+            "corrupt local record: unparseable mutation_id"
+        );
+    }
+
+    /// `CorruptRecord` is the one variant whose identifier is optional, and the distinction is
+    /// load-bearing: `None` is the row no `Outcome` can name, which only `sweep_corrupt` can reach.
+    #[test]
+    fn a_corrupt_record_reports_its_id_only_when_it_had_a_readable_one() {
+        let id = MutationId::from_uuid(uuid::Uuid::from_u128(9));
+
+        match Error::corrupt(id, "body is not valid JSON") {
+            Error::CorruptRecord { id: Some(got), .. } => assert_eq!(got, id),
+            other => panic!("expected an identified corrupt record, got {other:?}"),
+        }
+
+        match Error::corrupt_unidentified("unparseable mutation_id") {
+            Error::CorruptRecord { id: None, reason } => {
+                assert_eq!(reason, "unparseable mutation_id");
+            }
+            other => panic!("expected an unidentified corrupt record, got {other:?}"),
+        }
+    }
+}

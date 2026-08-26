@@ -43,7 +43,8 @@ Total: 130.
 ## D1 Priority
 
 **Corrected 2026-08-26, after D1 was implemented.** The original guidance was to port the 12 tests
-from `persistence/mutations.rs` first. In practice only six transferred:
+from `persistence/mutations.rs` first. In practice seven of the twelve transferred, into six ported
+tests — the two `SyncStatus` tests collapse into one:
 
 | Source test | Ported as |
 | --- | --- |
@@ -54,12 +55,25 @@ from `persistence/mutations.rs` first. In practice only six transferred:
 | `sync_status_reports_priority_order`, `test_sync_status_default` | `each_pass_reports_what_it_did` |
 | `refresh_pending_count_reloads_external_outbox_changes` | `pending_count_needs_no_refresh` |
 
-The other six — `typed_request_intents_map_supported_workout_routes`,
-`typed_request_intents_map_preferences_and_exercise_routes`,
-`typed_request_intents_map_translation_routes`,
-`remove_pending_exercise_draft_mutations_only_removes_matching_create_update`, and
-`enqueue_additional_variants_and_clear_pending_cover_route_shapes` — assert RepForge route
-construction, which a domain-neutral library has no counterpart for.
+The remaining five all assert RepForge route construction, which a domain-neutral library has no
+counterpart for:
+
+| Not ported | What it asserts |
+| --- | --- |
+| `typed_request_intents_map_supported_workout_routes` | That session and set helpers build the right method, path, and body |
+| `typed_request_intents_map_preferences_and_exercise_routes` | The same for preferences and exercise routes |
+| `typed_request_intents_map_translation_routes` | The same for translation-proposal routes |
+| `remove_pending_exercise_draft_mutations_only_removes_matching_create_update` | Selective removal of pending mutations by RepForge draft semantics |
+| `enqueue_additional_variants_and_clear_pending_cover_route_shapes` | Coverage across the remaining typed enqueue helpers |
+
+All five depend on `PostSessionRequest`, `PutUserPreferencesRequest`, and their siblings. The
+extraction boundary puts typed enqueue helpers in the application, so there is nothing in this crate
+for them to test — this is the boundary working, not a coverage gap. The behaviour they *indirectly*
+exercise, that an enqueued envelope round-trips its method, path, and body intact, is covered
+directly by conformance case 27 and by the `dto.rs` ports.
+
+An earlier version of this section said "only six transferred" and "the other six", which is
+arithmetically impossible against twelve. Corrected 2026-08-26.
 
 **The higher-value oracle was `frontend/dto.rs`.** Its five round-trip tests pin the wire format,
 which `wiki/decisions/010-batch-wire-format.decision.md` commits to preserving byte for byte. Four
@@ -71,7 +85,9 @@ The `Blocked` divergence stands as originally warned: the source dead-letters it
 `wiki/decisions/005-mutation-outcome-policy.decision.md`, and the ported test asserts the opposite
 of the source's on purpose.
 
-All ports live in `tests/source_oracle.rs`.
+The `persistence/mutations.rs` ports live in `tests/source_oracle.rs`; the `frontend/dto.rs`
+round-trips live in `tests/dto_oracle.rs`. Split 2026-08-27 along the seam the original file's
+own header already described, when a 400-line file limit was adopted.
 
 ## Later Priority
 

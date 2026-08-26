@@ -1,13 +1,31 @@
 # Extraction Boundary Proposal
 
 Document Class: Proposal
-Status: Proposed
+Status: Accepted
 Date: 2026-08-25
 Category: Architecture
 Scope: Where to draw the line between a reusable cache/sync core, persistence backends, a Dioxus adapter, and RepForge application code.
 Sources: `raw/initial/2026-08-25T083750Z/sources`, `raw/research/2026-08-25-prior-art-survey`, `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/references/prior-art-survey.reference.md`
 Verified: 2026-08-26 prior-art verification pass; see the reference page's `## Revision Note`.
 Related: `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/references/prior-art-survey.reference.md`, `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/decisions/001-single-threaded-core.decision.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/plans/prior-art-survey.plan.md`
+
+## Status Note
+
+Accepted 2026-08-26. D1 was built against this boundary and did not contradict it, which is the bar
+for a proposal moving out of `Proposed`.
+
+Acceptance is not validation of every claim here. Three parts remain untested by anything:
+
+- **The crate split.** D1 is one crate with modules drawn on these lines. Whether `frontbox-core`,
+  `frontbox-sqlite`, `frontbox-indexeddb`, and `frontbox-dioxus` are the right seams is unknown
+  until D3 and D5 try to live on them.
+- **The direct-dispatch ruling.** Keeping it in the application is a bet that a real flow can express
+  it with a caller-supplied `MutationId`. D4 is what settles that, and this page already says to
+  revisit if the trial cannot.
+- **The adapter responsibilities.** Nothing has been built against them.
+
+The `## Open Decisions` section below carries what is genuinely unsettled. Accepting the proposal
+does not close any of it.
 
 ## Problem
 
@@ -227,9 +245,11 @@ explicit user authorization.
   `wiki/decisions/008-mutation-envelope-extensibility.decision.md`.
 - **Local scope identity** - required opaque `ScopeKey`, stamped on records, enforced on read,
   retained on mismatch: `wiki/decisions/009-local-scope-identity.decision.md`.
-- **Batch wire format** - compatible with the source server's payload, which pins `chrono` alongside
-  `serde_json` into the compatibility surface:
+- **Batch wire format** - compatible with the source server's payload:
   `wiki/decisions/010-batch-wire-format.decision.md`.
+- **Owned RFC 3339 rendering** - the wire format's timestamp is produced by this crate and checked
+  against `chrono` by a dev-dependency oracle, so byte compatibility costs no public dependency:
+  `wiki/decisions/011-owned-rfc3339-rendering.decision.md`.
 
 ## Open Decisions
 

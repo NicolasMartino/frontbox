@@ -10,13 +10,42 @@ cache invalidation.
 It is being extracted from RepForge's Dioxus application into a framework-neutral core with
 framework and storage adapters. The core deliberately carries no Dioxus dependency.
 
-**Current stage: D1 implemented (2026-08-26); D2 onward still planning.** The crate exists at the
-repository root as a single package with modules matching the eventual crate split. Design lives in
-`wiki/` as specs, proposals, and decisions.
+**Current stage: D1 implemented 2026-08-26, D2 implemented 2026-08-27; D3 onward still planning.**
+The crate exists at the repository root as a single package with modules matching the eventual crate
+split. Design lives in `wiki/` as specs, proposals, and decisions.
 
-Do not begin work on a later deliverable — D2 cache versioning, D3 the Dioxus adapter, D4 the
-migration trial, D5 the durable backends — without an explicit go-ahead from the user. Ordinary
-maintenance of what D1 already ships does not need one.
+Do not begin work on a later deliverable — D3 the Dioxus adapter, D4 the migration trial, D5 the
+durable backends — without an explicit go-ahead from the user.
+
+Maintenance of what D1 and D2 already ship does not need one.
+
+**Maintenance** — go ahead:
+
+- fixing a defect;
+- tightening a doc comment;
+- adding a test, including a new conformance case;
+- splitting a file that has grown too long, with no change in behaviour;
+- correcting something a review found wrong.
+
+**Design change** — needs the same go-ahead as a new deliverable:
+
+- adding a public type, trait, method, field, enum variant, or exported macro;
+- adding or removing a feature flag;
+- changing what an existing public item means, even where the signature is unchanged.
+
+The public surface is what decisions 001-010 exist to pin down, which is why the second list is
+gated and the first is not. If a fix seems to require an API change, say so and stop rather than
+making it.
+
+## Code Shape
+
+- **Keep files under ~400 lines.** A soft limit, applied by splitting a module into a directory with
+  a facade `mod.rs` rather than by deleting content. The public paths must not move: a reader and a
+  `use` statement should not be able to tell that `cases::case_01_applied_is_deleted` lives in
+  `cases/status.rs`.
+- **Keep total coverage at or above 80%.** `scripts/verify.sh` gates it with `cargo llvm-cov`. It is
+  a floor on the crate, not a per-file rule — a module of trait declarations has nothing to execute,
+  and a test written to move that number would be asserting the compiler works.
 
 `./scripts/verify.sh` runs every gate the roadmap requires. Run it before claiming anything works.
 

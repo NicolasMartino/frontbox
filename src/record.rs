@@ -47,6 +47,11 @@ pub struct OperationMeta {
 
 impl OperationMeta {
     /// Name an operation.
+    ///
+    /// An empty name is accepted and is exactly as useless as omitting the metadata entirely — a
+    /// dead letter labelled `""` tells a human nothing. It is not rejected, because validating a
+    /// field core never reads would make the constructor fallible for no safety gain, and because
+    /// what counts as a meaningful name is the caller's judgment, not this crate's.
     pub fn new(name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
@@ -277,20 +282,24 @@ pub struct QuarantinedRecord {
 
 /// Serializes an epoch-milliseconds `i64` as the source protocol's `client_datetime`.
 ///
-/// Delegating to chrono's own impls rather than formatting by hand is what guarantees the output
-/// matches the existing server byte for byte.
+/// The rendering lives in [`crate::rfc3339`], which is held to chrono's byte-for-byte output by an
+/// oracle test rather than by depending on chrono (decision 011).
 mod client_datetime {
-    use chrono::{DateTime, Utc};
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub(super) fn serialize<S: Serializer>(millis: &i64, serializer: S) -> Result<S::Ok, S::Error> {
-        let dt = DateTime::<Utc>::from_timestamp_millis(*millis).ok_or_else(|| {
+        let text = crate::rfc3339::format(*millis).ok_or_else(|| {
             serde::ser::Error::custom(format!("client timestamp out of range: {millis}"))
         })?;
-        dt.serialize(serializer)
+        serializer.serialize_str(&text)
     }
 
     pub(super) fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
-        Ok(DateTime::<Utc>::deserialize(deserializer)?.timestamp_millis())
+        // Owned rather than borrowed: a `&str` cannot be deserialized from a JSON string carrying
+        // an escape, and refusing those would make the accepted grammar depend on the encoding.
+        let text = String::deserialize(deserializer)?;
+        crate::rfc3339::parse(&text).map_err(|reason| {
+            serde::de::Error::custom(format!("invalid client_datetime {text:?}: {reason}"))
+        })
     }
 }

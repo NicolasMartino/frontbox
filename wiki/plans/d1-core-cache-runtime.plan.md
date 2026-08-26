@@ -210,12 +210,24 @@ backends, with no new schema column and no clock dependency. It buys determinism
 `MutationId` is a random UUID, so same-millisecond ties resolve stably but arbitrarily.
 
 **The tie-break constrains the durable schema, which this plan originally did not say.**
-`MutationId: Ord` compares the UUID's 16 bytes. Lowercase canonical hyphenated hex compares in the
-same sequence as those bytes, so a SQLite `ORDER BY created_at, mutation_id` over a `TEXT` column
-reproduces the in-memory order exactly — but only if the stored text is that form. Storing uppercase
-hex, an unhyphenated form, or a BLOB in a different byte order silently produces a different order
-on that backend, which is the class of cross-backend disagreement the tie-break exists to remove.
-D5 owes this a conformance assertion, not just a convention.
+`MutationId: Ord` compares the UUID's 16 bytes, so a durable backend has to sort the same way.
+
+Text ordering agrees with byte ordering as long as **every row uses the same textual form**. ASCII
+puts digits below both letter cases, so consistently lowercase and consistently uppercase hex each
+sort correctly, and the hyphens sit at fixed positions so they never separate two canonical strings.
+A SQLite `ORDER BY created_at, mutation_id` over a `TEXT` column holding `MutationId::to_string`
+output reproduces the in-memory order exactly, as does a `BLOB` column holding the UUID's big-endian
+bytes.
+
+What breaks it is *mixed* forms. One row uppercase and another lowercase reverses any pair straddling
+the case boundary; a row written without hyphens sorts before a hyphenated one whenever their first
+eight characters match, since `-` is `0x2D`, below every hex digit. Both are what a migration, a
+second write path, or a hand-edited row produces. The D5 rule is therefore *store exactly what
+`MutationId::to_string` returns and never transform it* — and the column must use a binary collation,
+not a case-folding one.
+
+An earlier version of this note claimed uppercase hex alone would invert the order. That was wrong,
+and the unit tests in `src/id.rs` demonstrate what actually inverts it. Corrected 2026-08-26.
 
 If real causal ordering is required, the answer is a monotonic sequence number assigned at enqueue.
 That remains open. It was originally deferred to durable backends in D5 because it adds a column.
@@ -284,8 +296,9 @@ The D1 test suite should then cover:
     happens before an intent can be constructed. The residual corrupt-body surface is durable
     corruption after a successful write, which is cases 15 and 18.
 26. A `created_at` outside the range the wire format can express is a corrupt record, not a panic
-    and not a mid-batch serialization failure. New: added because decision 010 routes timestamps
-    through `chrono`.
+    and not a mid-batch serialization failure. New: added because decision 010 renders timestamps
+    as RFC 3339. The bound tightened on 2026-08-27 to RFC 3339's four-digit year (decision 011);
+    the fixture is `i64::MAX`, unrepresentable under either rule, so the case is unchanged.
 27. An intent with no `op` serializes to exactly the five keys the source protocol defines, with
     `client_datetime` as the expected RFC 3339 string, and round-trips. Setting `op` adds the key
     and only then. New: this is the assertion that makes decision 010 checkable.
@@ -295,6 +308,21 @@ The D1 test suite should then cover:
 29. Scope keys are compared exactly. Keys differing only by surrounding whitespace or case are
     distinct scopes and cannot see each other's records. New: normalization would be non-injective,
     which is the same collapse decision 009 flags for backend storage-name encoding.
+30. A sync pass dropped mid-flight does not wedge the runner: the next pass runs normally rather
+    than reporting `AlreadyRunning` forever. Added 2026-08-26 after review found the in-flight flag
+    was released only on the success path, which a cancelled `use_future` would have poisoned.
+31. An outcome set naming one record twice is rejected with `Error::Protocol` and commits nothing.
+    Added 2026-08-26 after review found `apply_outcomes` would happily write two dead letters for
+    one row.
+32. A verdict repeated inside one server response is an anomaly and **neither verdict is applied**;
+    the record stays queued. Added 2026-08-26 alongside case 31. **Corrected 2026-08-27:** the case
+    originally blessed first-wins, which made JSON array position the tie-break between two verdicts
+    the docs said there was no basis for choosing between. Review found the contradiction.
+33. A mutation the server returned no verdict for stays queued and is counted in
+    `SyncReport::retained`. Added 2026-08-27: the behaviour was already implemented and documented,
+    but the runtime spec cited case 21 as its proof, and case 21 is about records that were never
+    sent at all. This case sends the record and has the server answer the batch without mentioning
+    it, which is the distinct thing.
 
 ## Out Of Scope For D1
 
@@ -366,8 +394,8 @@ implements all three storage traits. That would not compile if any trait require
 
 - The user owns Git state. Do not stage, commit, reset, or otherwise write Git state.
 - Do not modify `raw/`; it is immutable provenance.
-- Do not begin implementation before explicit authorization. D1 was authorized 2026-08-26; this
-  still binds D2 onward.
+- Do not begin implementation before explicit authorization. D1 was authorized 2026-08-26 and D2 on
+  2026-08-27; this still binds D3 onward.
 - Treat `08-offline-sync.spec.md` as normative when it conflicts with `mutations.rs`.
 - Keep all source divergences visible in the docs until implementation tests prove the new
   behavior. Discharged for D1: every divergence now has a named conformance case, tabulated in
@@ -384,28 +412,47 @@ future crate split rather than a workspace, per the extraction-boundary proposal
 protocol, the three storage traits, `SyncTransport`, `SyncRunner`, a complete in-memory backend with
 failure injection, and a backend-agnostic conformance suite behind a `testing` feature.
 
-43 tests pass: 28 conformance cases, 1 fault-injection case, 2 `!Send` proofs, 11 source-oracle
-ports, and 1 doctest. Both wasm builds and clippy on both targets are clean.
+**The behaviour it actually has is recorded in `wiki/specs/frontbox-runtime.spec.md`**, which is the
+durable page. This section keeps only what belongs to a plan: what the act of implementing changed
+about the plan itself.
+
+77 tests pass at the end of D1: 32 conformance cases, 1 fault-injection case, 29 unit tests (4
+identifier-ordering, 5 clock, 5 error, 4 scope, 11 RFC 3339 rendering), 2 `!Send` proofs, 6
+source-oracle ports from `persistence/mutations.rs`, 5 wire-format oracles from `frontend/dto.rs`,
+and 2 doctests. Both wasm builds and clippy on both targets are clean, and coverage is 90% regions /
+96% lines / 93% functions.
+
+D2 later took the crate to 96 tests; see `wiki/plans/d2-cache-invalidation.plan.md`. The figures
+above are the D1 state, kept as the record of what this plan delivered.
+
+Counts as of 2026-08-27, after two rounds that day. The 2026-08-26 build was 50 tests. The first
+round added case 33 and the review-driven unit tests for `clock`, `error`, and `scope`, plus one
+doctest on `ScopeKey`, reaching 66. The second added `src/rfc3339.rs` and its chrono oracle
+(decision 011), reaching 77.
 
 ### What implementation changed
 
 - **The enqueue input and the stored record are two types.** Decision 008's single `OutboxRecord`
   could not also satisfy decision 009's stamping rule. Recorded as an amendment on decision 008.
-- **A new decision, 010**, pinning the batch wire format to the source server's payload and
-  therefore pinning `chrono` alongside `serde_json` into the compatibility surface.
-- **`chrono` is depended on without its `clock` feature**, so `Utc::now()` does not compile in this
-  crate. Decision 002's clock-injection rule is now enforced by the build rather than by review.
+- **A new decision, 010**, pinning the batch wire format to the source server's payload. It also
+  pinned `chrono` into the compatibility surface — later reversed by decision 011, which kept the
+  payload and dropped the dependency.
+- **No date library in the runtime graph**, so `Utc::now()` does not compile in this crate. The
+  rendering lives in `src/rfc3339.rs` and chrono survives only as a dev-dependency oracle, itself
+  declared without the `clock` feature so the rule holds in tests too. Decision 002's
+  clock-injection rule is enforced by the build rather than by review.
 - **`MutationId: Ord` constrains the D5 durable schema.** See the Ordering Policy above.
 
 ### What implementation found that this plan had wrong
 
 - **Case 25 was mis-specified.** It asked for a rejection at `enqueue`; a parsed body makes the
   malformed case unrepresentable, so there is nothing to reject. Corrected above.
-- **"Port the 12 tests in `persistence/mutations.rs`" overstates what is portable.** Six of the
-  twelve assert RepForge route construction and have no counterpart in a domain-neutral library.
+- **"Port the 12 tests in `persistence/mutations.rs`" overstates what is portable.** Five of the
+  twelve assert RepForge route construction and have no counterpart in a domain-neutral library;
+  the other seven ported into six tests, since the two `SyncStatus` tests collapse into one.
   The `frontend/dto.rs` round-trip tests turned out to be the more valuable oracle, because they pin
-  the wire format decision 010 commits to. Recorded in `tests/source_oracle.rs` and in
-  `wiki/references/source-test-inventory.reference.md`.
+  the wire format decision 010 commits to. Recorded in `tests/source_oracle.rs`, in
+  `tests/dto_oracle.rs`, and in `wiki/references/source-test-inventory.reference.md`.
 - **The source's `SyncStatus` does not transfer.** It is four sticky booleans read back in priority
   order, and the source's own test has to reach into private atomics to set them up — the status is
   not reachable through its public API. `SyncReport` reports per pass instead of holding sticky
@@ -421,4 +468,10 @@ ports, and 1 doctest. Both wasm builds and clippy on both targets are clean.
   above.
 - Durable storage format versioning, written from the first durable write.
 - The conformance suite itself: `StoreFactory` and `FaultInjection` are the seams SQLite and
-  IndexedDB implement to run these same 29 cases.
+  IndexedDB implement to run these same 32 cases, plus the fault-injection case.
+- **IndexedDB runs the suite through the async macros.** `frontbox_conformance_tests_async!` and
+  `frontbox_fault_injection_tests_async!` emit `async fn` cases for a harness that drives them
+  itself, because a browser has no `block_on` that an IndexedDB future can make progress under. Both
+  emission shapes read one shared case list, so the two backends cannot drift into running different
+  suites. Added 2026-08-27; the wasm example in the module docs had until then named a
+  `wasm_bindgen_futures` function that does not exist.

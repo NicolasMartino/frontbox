@@ -12,16 +12,18 @@ categories = ["caching", "database", "wasm"]
 publish = false
 
 [dependencies]
-# `default-features = false` deliberately drops chrono's `clock` feature, so `Utc::now()`
-# does not compile anywhere in this crate. Time enters only through `Clock` (decision 002),
-# and the wasm build stays free of `js-sys`/`iana-time-zone`.
-chrono = { version = "0.4", default-features = false, features = ["serde", "alloc"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-# `v4` is opt-in (though on by default) because core never generates a `MutationId`:
-# the caller supplies it, which is what makes application-owned direct dispatch
-# expressible. Building `--no-default-features` proves core needs no randomness backend.
+# Core never generates a `MutationId` — the caller supplies it, which is what makes
+# application-owned direct dispatch expressible. Generation therefore lives behind the
+# `v4` feature rather than in the base dependency.
+#
+# It stays *on* by default, deliberately: a caller with no identifier of its own would
+# otherwise have to depend on `uuid` directly to make one, which trades a transitive
+# dependency for an explicit one and helps nobody. The cost is a randomness backend,
+# and `--no-default-features` removes it — a gate in `scripts/verify.sh` builds that
+# configuration for wasm so the randomness-free path cannot rot.
 uuid = { version = "1", default-features = false, features = ["serde"] }
 
 [dev-dependencies]
@@ -29,10 +31,20 @@ pollster = "0.4"
 # Doctests compile as external crates, so these need to be reachable there too.
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
+# A test oracle, not a dependency (decision 011). `src/rfc3339.rs` renders `client_datetime`
+# itself; chrono is kept here so `src/rfc3339/tests.rs` can assert those bytes are chrono's,
+# which is what lets the wire format stay byte-compatible without chrono in the semver contract.
+#
+# `default-features = false` still drops the `clock` feature, so `Utc::now()` does not compile
+# even in tests. Time enters only through `Clock` (decision 002) everywhere, not just in `src`.
+chrono = { version = "0.4", default-features = false, features = ["serde", "alloc"] }
 
 [features]
 default = ["v4"]
+# Random `MutationId` generation. See the note on the `uuid` dependency above.
 v4 = ["uuid/v4", "uuid/js"]
+# The backend-agnostic conformance suite. Off by default so test scaffolding is not
+# compiled into applications; the durable backends will turn it on to run the suite.
 testing = []
 
 [package.metadata.docs.rs]

@@ -6,7 +6,7 @@ Date: 2026-08-25
 Category: Architecture
 Scope: What RepForge's frontend cache actually does today, verified against the copied source corpus, as the factual basis for extraction.
 Sources: `raw/initial/2026-08-25T083750Z/sources`
-Related: `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/006-corrupt-record-policy.decision.md`, `wiki/decisions/007-generic-entity-key-registry.decision.md`, `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/references/source-test-inventory.reference.md`, `wiki/plans/d1-core-cache-runtime.plan.md`
+Related: `wiki/specs/frontbox-runtime.spec.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/006-corrupt-record-policy.decision.md`, `wiki/decisions/007-generic-entity-key-registry.decision.md`, `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/references/source-test-inventory.reference.md`
 
 ## Summary
 
@@ -234,9 +234,17 @@ depends on `EntityType::all()` (`persistence/cache.rs:183-186`). A generic libra
 supplied key registry. See `wiki/decisions/007-generic-entity-key-registry.decision.md`.
 
 Unknown entity names are ignored by the listener after logging (`listener.rs:465-505`). Reconnect
-version checks similarly drop unknown names when parsing the server map (`listener.rs:414`). Missing
-versions passed as `None` to `update_version` become `0` (`persistence/cache.rs:91-97`), which can
-look like an anomaly for a client with a non-zero local version.
+version checks similarly drop unknown names when parsing the server map (`listener.rs:414`) — with
+no log at all, so a client whose registry has drifted reconciles against a silently truncated view
+and reports success. See `wiki/decisions/013-unknown-entity-name.decision.md`, which keeps the
+ignoring and adds the reporting.
+
+`update_version` takes `Option<u64>` and treats `None` as `0` (`persistence/cache.rs:96`), which can
+look like an anomaly for a client with a non-zero local version. Verified 2026-08-27: **no caller
+ever passes `None`** — all eleven call sites in the corpus pass `Some(...)` — and
+`LegacyInvalidationEvent`, the one event shape carrying no version, is declared and never used
+(`frontend/sse.rs:26-34`). The `Option` is unexercised surface, so the D2 plan removes it rather
+than documenting it.
 
 ## Dioxus Integration
 
@@ -276,10 +284,19 @@ write dispatch:
   typed endpoint refetches after invalidation rather than a single state endpoint.
 - The spec says pull/refetch work should be delayed while the outbox has pending local mutations,
   but the observed listener eagerly refetches after invalidation and never consults the outbox.
+  `eager_refetch` (`listener.rs:472`) calls `Store::replace_all`, which is `DELETE FROM …` followed
+  by re-inserting the server's rows (`persistence/native.rs:585`, `persistence/web.rs:435`), so an
+  optimistic projection of a queued mutation is destroyed outright. The only guard is against an
+  *empty server response*. **Answered by `wiki/decisions/014-pull-gating.decision.md`:** core reports
+  the conflict rather than gating a pull it does not perform.
 - The outbox processes by timestamp only; the spec's stronger FIFO and causality language should be
   revisited during extraction. Same-millisecond ties are not deterministic.
 - `EntityCache` version state appears in memory only (a `HashMap`, `persistence/cache.rs:69`);
-  persistence should be decided for a reusable library.
+  persistence should be decided for a reusable library. **Answered by
+  `wiki/decisions/015-cache-version-persistence.decision.md`:** durable, with version and staleness
+  as a single unit — persisting the version alone would leave a client believing an invalidated
+  entity is fresh, because the local version advances at invalidation and only the staleness flag
+  remembers the refetch is owed.
 - Domain-specific stores and typed enqueue helpers are coupled to RepForge entities.
 - Current error values are mostly strings - `pub type StoreError = String`
   (`persistence/types.rs:12`); a library should expose structured errors.
@@ -318,32 +335,11 @@ Because the persisted envelope is already domain-neutral HTTP, the boundary fall
 queue, the sync loop, and the status machine are reusable after correcting the source defects; only
 the layer that constructs envelopes is domain-bound.
 
-## D1 Extraction Outcome
+## What Extraction Did With All This
 
-Added 2026-08-26, after D1 was implemented. This page continues to record what the **source** does;
-this section records which of those behaviours the extracted library kept, corrected, or dropped,
-and which conformance case proves it. Nothing above was rewritten — the source facts stand as
-observed.
+D1 is implemented. Which of the behaviours above frontbox kept, corrected, or dropped — and which
+conformance case proves each one — is recorded in `wiki/specs/frontbox-runtime.spec.md`, not here.
 
-| Source behaviour | frontbox D1 | Proof |
-| --- | --- | --- |
-| `Blocked` dead-lettered with `Rejected` (`mutations.rs:270`) | Retained; only `Rejected` dead-letters | Cases 4, 19; `blocked_is_retained_where_the_source_dead_letters_it` |
-| Whole outbox loaded as one batch (`mutations.rs:513-514`) | Bounded `pending_batch(limit)` | Cases 10, 21 |
-| Dead-letter insert then separate discarded delete (`mutations.rs:281,658`) | One atomic `apply_outcomes` | Case 9 |
-| Malformed rows hidden by `filter_map(...ok())` (`native.rs:269`, `web.rs:112`) | Quarantine plus a backend-owned `sweep_corrupt` | Cases 15, 18, 26 |
-| `pub type StoreError = String` (`types.rs:12`) | One non-exhaustive structured `Error` | Compile-time |
-| `Utc::now()` inside record constructors (`types.rs:88`) | Injected `Clock`; `chrono` without its `clock` feature, so `Utc::now()` does not compile | Case 13 |
-| `ORDER BY created_at` with no tie-break (`native.rs:253`, `web.rs:115`) | Total `(created_at, mutation_id)` order | Cases 11, 12 |
-| Scoped and unscoped constructors side by side (`native.rs:70`/`:86`, `web.rs:81`/`:89`) | Required `ScopeKey`, no unscoped constructor, enforced on every read, retained on mismatch | Cases 22, 23, 29 |
-| Body stored as pre-serialized text (`types.rs:23`) | Parsed `serde_json::Value`, so a malformed body is unrepresentable | Case 25 |
-| Pending count cached in an `AtomicUsize` needing explicit refresh | Read from storage per call | `pending_count_needs_no_refresh` |
-| Sticky `SyncStatus` booleans read in priority order (`mutations.rs:61,334-345`) | Per-pass `SyncReport`, with an explicit no-progress signal | Cases 7, 20; `each_pass_reports_what_it_did` |
-| `MutationIntentDto` wire shape (`dto.rs:96-108`) | Preserved byte for byte | Case 27; the `dto.rs` ports in `tests/source_oracle.rs` |
-
-Two source behaviours were deliberately **not** carried and remain out of scope: typed per-route
-enqueue helpers, and direct-dispatch-with-fallback, which stays application-owned.
-
-One observation about the source's own tests belongs here. `sync_status_reports_priority_order`
-sets up its scenario by writing directly to `store.inner.is_offline` and `store.inner.is_error` —
-private atomics. A status that can only be arranged by reaching past the public API is a status the
-public API does not expose, which is why `SyncStatus` did not transfer as a shape.
+The separation is deliberate. This page's job is to say what the source system does, verified against
+the copied corpus. Folding the extracted library's behaviour into it would blur the one distinction
+the extraction depends on: what was observed versus what was decided.

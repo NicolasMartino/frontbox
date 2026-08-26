@@ -353,3 +353,324 @@ Pages affected: `wiki/decisions/010-batch-wire-format.decision.md`,
 `wiki/specs/source-frontend-cache-architecture.spec.md`,
 `wiki/references/source-test-inventory.reference.md`,
 `wiki/proposals/extraction-boundary.proposal.md`, `wiki/index.md`, `wiki/log.md`
+
+## [2026-08-26] fix | Review of the D1 implementation: four defects, two wrong claims
+
+**Summary.** An external review found four real defects — one that could silently stop a queue
+syncing forever — plus a set of consistency and documentation gaps. All are fixed. Verifying the
+review also turned up two claims I had written that were wrong: a test count that does not add up,
+and an ordering constraint stated more narrowly than the truth.
+
+### Defects fixed
+
+- **`SyncRunner::sync_once` could poison itself on cancellation** (`src/runner.rs`). The in-flight
+  flag was released only on the success path, so a future dropped mid-`await` left it set and every
+  later pass returned `AlreadyRunning` forever — a queue that stops syncing with no error to explain
+  it. Cancellation is not exotic here: a Dioxus `use_future` is dropped on every component
+  re-render. Now released by a `Drop` guard. Conformance case 30.
+- **`apply_outcomes` accepted duplicate ids** (`src/memory.rs`). Two outcomes for one id resolve to
+  the same record, so a pair of `DeadLetter` dispositions wrote two dead letters for one row and the
+  count stopped matching reality. Now `Error::Protocol`, committing nothing. The runner already
+  guarded this internally; the trait is public and had to defend its own contract. Conformance
+  cases 31 and 32.
+- **Public protocol types were closed while the rest of the API was additive**
+  (`src/protocol.rs`, `src/store.rs`). `MutationStatus`, `MutationResult`, both batch types,
+  `RemoteRejection`, `Disposition`, and `Outcome` are now `#[non_exhaustive]`, with `new`
+  constructors on the batch types since they had none. Recorded on `MutationStatus` is what this
+  does *not* buy: the enum still derives `Deserialize`, so an unknown status string still fails the
+  whole response. Tolerating unknown wire statuses is a protocol change, not an API one, and
+  decision 010 pins the payload to five.
+- **Reads silently skipped corrupt rows with no contract saying so** (`src/store.rs`). Documented
+  rather than changed, with the two rejected alternatives written down: sweeping inside a read makes
+  reads mutate storage, and erroring on a read lets one bad row wedge an otherwise healthy queue —
+  the outcome decision 006 exists to prevent. The window is bounded because the runner sweeps every
+  pass; a caller that reads without ever syncing must sweep itself.
+
+### Two claims of mine that were wrong
+
+- **The source-test arithmetic did not add up.** `wiki/references/source-test-inventory.reference.md`
+  said "only six transferred" *and* "the other six" against twelve tests. The truth is seven
+  transferred into six ported tests — the two `SyncStatus` tests collapse into one — and five did
+  not, all of them RepForge route construction. The five are now tabulated with what each asserts
+  and why the extraction boundary means there is nothing here to test. Corrected in the reference,
+  the D1 plan, and `tests/source_oracle.rs`.
+- **The `MutationId` ordering constraint was stated too narrowly.** I had written that only
+  lowercase canonical hex preserves the byte order and that "any other textual form breaks that
+  guarantee". False: ASCII puts digits below both letter cases, so consistently uppercase hex sorts
+  correctly too, as does a big-endian `BLOB`. The actual hazard is *mixed* forms — one row uppercase
+  and another lowercase inverts any pair straddling the case boundary, and an unhyphenated row sorts
+  before a hyphenated one once their first eight characters match, since `-` is `0x2D`. The D5 rule
+  is therefore "store exactly what `MutationId::to_string` returns, never transform it, and use a
+  binary collation". Four unit tests in `src/id.rs` now demonstrate both inversions instead of
+  asserting the rule in prose. Corrected in the D1 plan's Ordering Policy and `wiki/index.md`.
+
+### Structure
+
+- **New page `wiki/specs/frontbox-runtime.spec.md`.** The D1 outcome table had been appended to the
+  source spec, which blurred the distinction the extraction depends on: what was observed in
+  RepForge versus what was decided for frontbox. Implementation truth now lives on its own page,
+  with a pointer from the source spec. It also carries a second table for behaviours the source has
+  no position on, which is where the cancellation and duplicate-outcome contracts are recorded.
+- **`wiki/proposals/extraction-boundary.proposal.md` moved to `Accepted`**, with a status note
+  saying what acceptance does not cover: the crate split, the direct-dispatch ruling, and the
+  adapter responsibilities remain untested until D3, D4, and D5.
+- **Decision 009 gained an explicit whitespace-only-key stance.** Only the empty key is rejected;
+  `" "` is a valid, distinct scope. Rejecting it would be core judging key *contents*, and it would
+  catch almost nothing — the realistic bug is `format!("user:{id}")` with an empty `id`, which
+  yields `"user:"`.
+- **Decision 010 gained a `## Release Follow-Up`** naming three obligations that come due before any
+  release: a `wiki/compatibility/` note for `serde_json` and `chrono`, a changelog entry when either
+  major moves, and a pinned statement of which server payload version the wire format targets.
+
+### Other
+
+`ManualClock::advance` now saturates rather than wrapping, and `SystemClock` uses a checked
+conversion instead of `as`. `AGENTS.md` now bounds what "maintenance" means — public API changes
+need the same authorization as a new deliverable. `scripts/verify.sh` locates the repository root
+from its own path and labels the three `grep` checks as secondary to the compile gates, with a note
+on what each is a proxy for. The `README` and the crate-level docs gained a runnable sync example;
+`src/testing/mod.rs` documents the wasm attribute mode the macro already supported.
+
+50 tests pass. All gates green.
+
+### Declined
+
+One review item asked for archived permalinks in
+`raw/research/2026-08-25-prior-art-survey/sources/05-http-command-queues.md`. `raw/` is immutable
+provenance that the user curates, so this is left for them. The point is a good one.
+
+Pages affected: `wiki/specs/frontbox-runtime.spec.md` (new),
+`wiki/specs/source-frontend-cache-architecture.spec.md`,
+`wiki/proposals/extraction-boundary.proposal.md`,
+`wiki/decisions/008-mutation-envelope-extensibility.decision.md`,
+`wiki/decisions/009-local-scope-identity.decision.md`,
+`wiki/decisions/010-batch-wire-format.decision.md`,
+`wiki/plans/d1-core-cache-runtime.plan.md`,
+`wiki/references/source-test-inventory.reference.md`,
+`wiki/roadmaps/extraction.roadmap.md`, `wiki/index.md`, `wiki/log.md`
+
+## [2026-08-27] lint | review fixes, file splits, coverage floor
+
+Acted on an external code review of the D1 implementation. Five findings, all confirmed against the
+code before anything was changed; two of them needed the user's go-ahead because the fix added
+public API, and both were granted.
+
+**Duplicate server verdicts no longer resolve by arrival order.** `src/runner.rs` accepted the first
+verdict for a repeated `mutation_id` and reported only the later ones as anomalies, while
+`src/transport.rs` documented that there is "no basis for preferring either". Those cannot both be
+true: first-wins *is* a preference, decided by position in a JSON array. A server answering
+`Applied` then `Rejected` deleted the record; the same disagreement in the other order
+dead-lettered it. Repeated ids are now found in a pre-scan, every verdict for one is reported, and
+none is applied — the record stays queued and is ruled on again next pass, which is safe because
+`mutation_id` is the idempotency key. Conformance case 32 was rewritten to assert both orders
+produce the same outcome. Verdicts that merely agree are not exempted: deciding two are "the same"
+would mean core comparing rejection payloads, which is the judgment it is declining to make.
+
+**The wasm conformance example named a function that does not exist.**
+`wasm_bindgen_futures::spawn_local_blocking` is not real, and could not be — a browser cannot block
+on an IndexedDB future, because the callback that would resolve it cannot fire until the stack
+unwinds. The suite gained `frontbox_conformance_tests_async!` and
+`frontbox_fault_injection_tests_async!`, which emit `async fn` cases with no `block_on` at all. Both
+emission shapes read one shared case list, so the native and wasm backends cannot drift into running
+different suites. The async shape is instantiated in `tests/in_memory.rs` under
+`#[allow(dead_code)]`: nothing runs, but the macro is expanded and type-checked on every build,
+rather than first being tried halfway through the D5 IndexedDB port.
+
+**Case 33 added, and a wrong proof citation corrected.** `wiki/specs/frontbox-runtime.spec.md` cited
+case 21 as the proof that a mutation with no server verdict stays queued. Case 21 is about records
+that were never *sent*, which is a different claim. Case 33 sends three records, has the server
+answer only one, and asserts the other two are counted in `retained` and are still there to resend.
+
+**Two more public dependencies found.** Decision 010's release follow-up named `serde_json` and
+`chrono`. Writing `wiki/compatibility/public-dependencies.compat.md` found `uuid` as well —
+`MutationId::from_uuid`/`as_uuid` take and return `uuid::Uuid` — and `serde`, since implementing a
+transport means serializing the protocol types. Both arrived through decisions 008 and 009 rather
+than 010, which is how a dependency becomes public without any single decision noticing.
+
+**Smaller corrections.** `ManualClock::advance` said "move forward" while taking a signed delta;
+documented as a signed move, with backward motion supported deliberately and overflow still
+saturating so it cannot happen by accident. `README.md` used `uuid::Uuid::new_v4()`, which forced a
+direct `uuid` dependency on a reader — the exact cost `Cargo.toml` argues the default `v4` feature
+exists to avoid — and described `made_progress() == false` as meaning stalled, which is also true of
+an idle pass. `src/id.rs` now names the binary-collation requirement the wiki already carried.
+`ScopeKey` gained a runnable example of the caller-side validation its docs recommend.
+`scripts/verify.sh` dropped `grep -q` so a failing textual gate shows what it matched.
+
+**Two standing constraints adopted, at the user's request rather than the review's.** Files stay
+under ~400 lines: `src/testing/cases.rs` (984) became a ten-module directory, `src/memory.rs` (562)
+a four-module one, `src/testing/mod.rs` split off its scripted transport and its macros, and
+`tests/source_oracle.rs` (459) split along the seam its own header already described, with the
+`frontend/dto.rs` ports moving to `tests/dto_oracle.rs`. Every public path is unchanged. And total
+coverage stays at or above 80%, now gated by `cargo llvm-cov` in `scripts/verify.sh`; the weak
+modules the first measurement exposed — `clock` at 27%, `error` at 48%, `scope` at 56% — gained unit
+tests and now sit at 94%, 97%, and 98%. Crate total: 89% regions, 96% lines, 93% functions.
+
+Test count moved from 50 to 66. `AGENTS.md` records both constraints and splits its
+maintenance-versus-design-change rule into two lists, since the wasm macro question turned on it.
+
+Pages affected: `wiki/specs/frontbox-runtime.spec.md`, `wiki/plans/d1-core-cache-runtime.plan.md`,
+`wiki/decisions/009-local-scope-identity.decision.md`,
+`wiki/decisions/010-batch-wire-format.decision.md`,
+`wiki/compatibility/public-dependencies.compat.md`, `wiki/index.md`
+
+## [2026-08-27] decision | owned RFC 3339 rendering, chrono demoted to a test oracle
+
+**Question asked:** whether a more mature crate could hold the wire format's RFC 3339 compatibility,
+given the project is pre-release with no production users and no legacy.
+
+**Checking the candidates changed the answer.** `chrono` is `0.4`, `time` is `0.3.55`, `jiff` is
+`0.2.35` — all `0.x`, so all three break on the *minor* position by Cargo's rules. Swapping one for
+another would have traded a breaking-on-minor public dependency for a breaking-on-minor public
+dependency, leaving decision 010's compatibility problem exactly where it was. chrono was also not
+the culprit its reputation suggests: its known troubles live in the `clock` feature, which decision
+010 had already excluded, and what remained in use was three functions across two call sites.
+
+**Decision 011** takes the other exit instead. `src/rfc3339.rs` renders and parses `client_datetime`
+itself — roughly 130 lines, since the format is one fixed shape with no timezones, no DST, and no
+leap seconds — and `chrono` moves to `[dev-dependencies]` as the oracle `src/rfc3339/tests.rs`
+compares against. Decision 010's "the bytes match rather than merely resemble" therefore survives as
+a test that runs on every build rather than as an argument from delegation.
+
+**The oracle earned its place before it was written.** Probing chrono first showed the obvious
+implementation is wrong: a zero millisecond emits *no* fractional part (`…:20Z`), while a non-zero
+one emits exactly three padded digits (`…:20.100Z`). Always-three-digits would have round-tripped
+perfectly and sent the server bytes it had never seen. The oracle was then checked by breaking the
+formatter on purpose — always-three-digits, and truncating division in place of Euclidean — and each
+mutation was caught by four separate tests.
+
+**Two behaviours tightened.** The representable range is now RFC 3339's four-digit year
+(`0000-01-01` .. `9999-12-31`) rather than chrono's ±262,000; past year 9999 chrono emitted ISO 8601
+expanded form (`+10000-01-01T00:00:00Z`), which the RFC 3339 grammar has no production for, so those
+payloads were built only to be refused remotely and now quarantine locally instead. And the accepted
+parse grammar is written down rather than inherited: no space for `T`, no leap-second `:60`, no
+expanded years — each stricter than chrono, each documented with its reason.
+
+`chrono` leaves the compatibility surface, which now holds only `serde_json`, `uuid`, and `serde`,
+all major `1`. The runtime dependency graph is `serde`, `serde_json`, `thiserror`, `uuid`; a new
+secondary gate in `scripts/verify.sh` asks `cargo tree --edges normal` rather than the manifest,
+since the risk it guards against is a date crate arriving transitively. Test count 66 to 77;
+coverage 90% regions / 96% lines / 93% functions. All gates pass.
+
+Pages affected: `wiki/decisions/011-owned-rfc3339-rendering.decision.md` (new),
+`wiki/decisions/010-batch-wire-format.decision.md` (amended in five places),
+`wiki/compatibility/public-dependencies.compat.md`, `wiki/index.md`,
+`wiki/roadmaps/extraction.roadmap.md`, `wiki/specs/frontbox-runtime.spec.md`,
+`wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/proposals/extraction-boundary.proposal.md`
+
+## [2026-08-27] decision | D2 prepared: decisions 012-015 and the cache-invalidation plan
+
+**Scope.** D2 is the next roadmap deliverable and had no execution plan. This batch writes it plus
+the four decisions it forces, and settles one D1 loose end that rhymes with them. **No code.**
+`AGENTS.md` gates D2 implementation behind an explicit go-ahead; the point of the order is that the
+go-ahead becomes a decision about a known design. D1's precedent argues for it — decisions 008 and
+009 were written before D1 was authorized and both constrained the public API, while 010 was written
+during D1 and needed an amendment three weeks later.
+
+**Decision 012 — an unknown `MutationStatus` is retained and reported.** Today one unrecognised
+status fails the *whole* `MutationBatchResponse`, discarding every verdict in it, on every pass,
+forever. Retain is the only disposition that assumes nothing: `Delete` assumes acceptance, and
+`DeadLetter` assumes refusal, and both are destructive if wrong. The catch-all keeps the server's
+own spelling — `Unknown(String)` — because tolerating a status you cannot name is a stall with no
+diagnosis. That costs `Copy` on `MutationStatus`, which is free now and a major version later. It
+also forces `SyncReport::anomalies` to carry a reason: the field already means two things, and a
+third would leave a caller with a list of identifiers and no way to tell why any of them is there.
+
+**Decision 013 — an unknown entity name is ignored but reported.** Shares 012's principle and
+diverges on disposition, deliberately: an unknown status blocks a real record, while an unknown
+entity names data this client does not model, so there is nothing to mark stale and ignoring is the
+only meaningful action. The source's defect is the silence, not the ignoring — and the reconnect
+path is the worse half, since `listener.rs:414` drops unknown names from the server version map with
+no log at all, so a drifted client reconciles against a truncated view and reports success. One
+event shape, because `LegacyInvalidationEvent` is declared and never used anywhere in the corpus.
+
+**Decision 014 — core reports pending-write conflict; it does not gate the pull.** The harm is
+concrete: `eager_refetch` calls `replace_all`, which is `DELETE FROM …` plus re-insert
+(`persistence/native.rs:585`), so a queued mutation's optimistic projection is destroyed and the
+user watches an offline edit revert. Three findings shaped the answer. Rebase — the survey's only
+precedent, Replicache — is unavailable by construction, because it needs replayable named mutators
+and frontbox's outbox holds an uninterpreted HTTP envelope by decision 008. A hard gate reintroduces
+exactly the failure decision 005 exists to prevent, since one permanently retained record would
+freeze every entity's cache forever. And core does not perform the refetch at all; whether read
+models belong in core is still open. So core makes the conflict visible at the moment staleness is
+read, and the application gates.
+
+**Decision 015 — version and staleness persist together, or not at all.** The trap: the local
+version advances at *invalidation*, not at refetch, so immediately afterwards local equals server
+while the data is still unfetched, and only the staleness flag remembers the refetch is owed.
+Persist the version alone and a restart yields `NoChange` on an entity that was never refreshed —
+serving data the server explicitly invalidated. Memory-only fails safe by comparison. Half
+persistence turns a safe failure into a silent correctness bug, so the pair is one atomically
+written unit, scoped per decision 009.
+
+**What the research changed.** Four things the plan did not have going in: `replace_all` is a
+`DELETE`, not a merge, and its only guard is against an empty *server* response; **no caller ever
+passes `None` to `update_version`** — all eleven pass `Some(...)` — so the D2 plan deletes the
+`Option` rather than documenting its hazard, and decision 007's consequence is superseded;
+`LegacyInvalidationEvent` is dead code; and only 3 of the 9 listener tests are D2 oracles, the other
+6 being SSE backoff and reconnect delay that belong to D3.
+
+Conformance cases 34-43 are specified in the plan, to be added to the single shared list in
+`src/testing/macros.rs`.
+
+Pages affected: `wiki/decisions/012-unknown-mutation-status.decision.md` (new),
+`wiki/decisions/013-unknown-entity-name.decision.md` (new),
+`wiki/decisions/014-pull-gating.decision.md` (new),
+`wiki/decisions/015-cache-version-persistence.decision.md` (new),
+`wiki/plans/d2-cache-invalidation.plan.md` (new),
+`wiki/decisions/007-generic-entity-key-registry.decision.md` (amended and superseded in part),
+`wiki/decisions/010-batch-wire-format.decision.md`, `wiki/index.md`,
+`wiki/roadmaps/extraction.roadmap.md`, `wiki/specs/source-frontend-cache-architecture.spec.md`
+
+## [2026-08-27] implementation | D2 built, plus decision 012's D1 change
+
+Authorized immediately after the planning batch above and built the same day. All
+`scripts/verify.sh` gates pass: 96 tests (up from 77), coverage 89% regions / 95% lines / 93%
+functions against an 80% floor, both wasm builds, clippy clean on both targets.
+
+**Decision 012 shipped first**, since it is a D1 change the D2 work would otherwise have to route
+around. `MutationStatus::Unknown(String)` with hand-written serde so the wire form round-trips
+transparently, `Retain` as its disposition, and `SyncReport::anomalies` reworked from
+`Vec<MutationId>` to `Vec<Anomaly>` carrying an `AnomalyKind`. `SyncOutcomeCounts::unknown_status`
+was added beyond the decision so `blocked + pending + unknown` still reconciles against `retained`
+without walking the anomaly list. Case 34 asserts that one unrecognised word no longer discards the
+verdicts around it.
+
+**D2 itself** is `src/entity.rs` (`EntityKey`, `EntityRegistry`, `SliceRegistry`), `src/cache/`
+(`EntityState`, `InvalidationEvent`, `VersionUpdate`, `compare`, `CacheVersionStore`,
+`InvalidationRunner` and its report types), and `src/memory/versions.rs`. Cases 35-43 cover it,
+behind a new `frontbox_cache_tests!` macro and a `VersionStoreFactory` trait.
+
+**Six things implementation changed from the plan.**
+
+- **`CacheVersionStore` speaks strings, not the application's key type.** The plan had it generic
+  over `Self::Key`; that cannot work, because `all_states` would have to reconstruct typed keys from
+  storage and a store holds no registry. Worse, a durable store outlives the build that wrote it, so
+  it can legitimately hold a name the current registry no longer models. Moving the seam to
+  `EntityKey::as_str` keeps that honest and stops D5's backends being generic over an application
+  type they never interpret.
+- **`EntityRegistry` uses an associated `Key` type**, not decision 007's generic parameter. One
+  registry serving several key types is not a thing anyone wants.
+- **`VersionStoreFactory` is a separate trait with its own macro**, following the `FaultInjection`
+  precedent rather than extending `StoreFactory`. A backend without a version store leaves a visible
+  gap instead of a silent pass.
+- **An incomplete conflict scan degrades to `Unattributed`.** The plan said the classifier scan is
+  bounded but not what a bounded scan should conclude. A false "nothing is queued" is the answer
+  that loses data, so a scan that could not see the whole queue declines to give one. Case 42.
+- **`InvalidationEvent` drops the source's `user_id`.** Its own comment says the field is
+  debugging-only and must not be used for access control; rather than carry a field whose
+  documentation is a warning, isolation stays entirely with `ScopeKey`.
+- **`src/cache/runner.rs` hit 466 lines** and split into `mod.rs`/`report.rs`/`conflict.rs`. The
+  conflict half is the natural seam — it is the only part that reads the outbox rather than the
+  version store.
+
+**One gate caught something worth keeping.** `no RepForge entity names in core` fired on
+`src/entity.rs`, where prose explaining the source's closed enum still named its variants. Reworded
+rather than exempted: the gate is a smell test, and teaching it to ignore comments would blunt
+exactly what it is for.
+
+Pages affected: `wiki/plans/d2-cache-invalidation.plan.md` (status and implementation outcome),
+`wiki/decisions/012-unknown-mutation-status.decision.md`,
+`wiki/decisions/013-unknown-entity-name.decision.md`, `wiki/decisions/014-pull-gating.decision.md`,
+`wiki/decisions/015-cache-version-persistence.decision.md`,
+`wiki/specs/frontbox-runtime.spec.md`, `wiki/roadmaps/extraction.roadmap.md`, `wiki/index.md`,
+`README.md`, `AGENTS.md`

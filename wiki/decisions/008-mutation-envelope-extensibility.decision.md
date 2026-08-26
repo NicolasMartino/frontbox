@@ -119,6 +119,10 @@ write.
 
 ## Amendment 2026-08-26: The Enqueue Input And The Stored Record Are Two Types
 
+*The shape below is what shipped. `src/record.rs` is now the authority on the exact signatures; the
+rationale above and below is why they are what they are, and stays because a reader who wants to
+change them needs it.*
+
 D1 implementation found that the snippet above cannot hold as written alongside decision 009.
 
 Decision 009 rule 2 requires the store to stamp its `ScopeKey` on every record, and
