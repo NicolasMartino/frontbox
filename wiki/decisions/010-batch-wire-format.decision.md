@@ -1,12 +1,29 @@
 # The Batch Wire Format Stays Compatible With The Source Server
 
 Document Class: Decision
-Status: Accepted; amended 2026-08-27 by decision 011
+Status: Accepted; amended 2026-08-27 by decision 011; premise questioned 2026-08-27 by decision 019
 Date: 2026-08-26
 Category: Public API Shape
 Scope: What `MutationBatchRequest` and `MutationBatchResponse` serialize to, and which serialization crates that pins into the public compatibility surface.
 Sources: `raw/initial/2026-08-25T083750Z/sources/frontend/dto.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/types.rs`, `src/record.rs`, `src/protocol.rs`
-Related: `wiki/decisions/011-owned-rfc3339-rendering.decision.md`, `wiki/decisions/012-unknown-mutation-status.decision.md`, `wiki/compatibility/public-dependencies.compat.md`, `wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/decisions/002-error-model.decision.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/proposals/extraction-boundary.proposal.md`
+Related: `wiki/decisions/011-owned-rfc3339-rendering.decision.md`, `wiki/decisions/019-verdict-synthesis.decision.md`, `wiki/proposals/single-flight-drain.proposal.md`, `wiki/decisions/012-unknown-mutation-status.decision.md`, `wiki/compatibility/public-dependencies.compat.md`, `wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/decisions/002-error-model.decision.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/proposals/extraction-boundary.proposal.md`
+
+## Premise Note
+
+**Added 2026-08-27.** RepForge is removing the BFF this decision is compatible *with*
+(`wiki/references/repforge-single-flight-proposal.reference.md`). Writes become per-resource `PUT`
+behind a gateway that only routes, so the endpoint `MutationBatchRequest` targets will not exist and
+passthrough compatibility would make D4 a translation layer in the opposite direction — the cost
+this decision was written to avoid.
+
+Nothing here is rewritten yet, deliberately: D4 is the deliverable that answers it with evidence,
+and RepForge asked for exactly that restraint. Two things are worth recording in the meantime. The
+envelope *fields* are not in question — `mutation_id`, `method`, `path`, `client_datetime`, `body`
+is the right record shape and a single-mutation request is a one-element batch on the wire. And the
+expiry reaches further than the payload: decision 019 observes that
+`SyncTransport::send_batch` returning a *server-produced* `MutationBatchResponse` stops describing
+anything real once the *target* server does not produce one — a statement about RepForge's redesign,
+not about every server frontbox might meet. See `wiki/proposals/single-flight-drain.proposal.md` §4.
 
 ## Decision
 

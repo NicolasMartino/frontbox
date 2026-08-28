@@ -6,7 +6,7 @@ Date: 2026-08-27
 Category: Public API Shape
 Scope: What happens when a server answers with a `MutationStatus` this crate has never heard of, and what signal the caller gets.
 Sources: `src/protocol.rs`, `src/runner.rs`, `src/store.rs`
-Related: `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/006-corrupt-record-policy.decision.md`, `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/decisions/013-unknown-entity-name.decision.md`, `wiki/specs/frontbox-runtime.spec.md`
+Related: `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/019-verdict-synthesis.decision.md`, `wiki/decisions/006-corrupt-record-policy.decision.md`, `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/decisions/013-unknown-entity-name.decision.md`, `wiki/specs/frontbox-runtime.spec.md`
 
 ## Decision
 
@@ -88,13 +88,13 @@ responses from an operator.
 
 ## Consequences
 
-- **The stall is visible but not self-clearing.** A record whose verdict is always `Unknown` is
-  retained forever. `made_progress()` is false and `is_stalled()` is true, and every pass reports
-  the anomaly with the offending string — so the condition is loud, not silent. Escalating it
-  automatically would need attempt tracking or aging, which D1 deliberately does not have. This
-  decision therefore makes the open question *"whether retained work needs aging, attempt tracking,
-  or last-error metadata"* (`wiki/index.md`, Open Work) materially more urgent: it is now the only
-  route out of a vocabulary mismatch that never resolves.
+- **The stall is visible and, since decision 017, self-clearing.** A record whose verdict is always
+  `Unknown` reports loudly on every pass — `made_progress()` is false, `is_stalled()` is true, and
+  the anomaly carries the server's own spelling. Under **decision 017 (2026-08-27)** it is also
+  dead-lettered once its attempt count reaches a caller-set bound, so the queue behind it is
+  released. Absent a configured bound the record is still retained indefinitely, because 017 ships
+  with no default; the original stall text below therefore still describes the unconfigured case
+  exactly.
 - **`MutationStatus` is no longer `Copy`.** Call sites take it by reference or clone. Internal
   churn only, since nothing is published.
 - **`drains()` stays total and stays honest.** `Unknown` does not drain, so a batch of nothing but
@@ -105,6 +105,24 @@ responses from an operator.
 - ~~**A conformance case is owed**~~ **Implemented as case 34**, asserting that a batch containing
   one unknown status still applies every known verdict in it, retains the unknown one, and reports
   it with the server's spelling intact.
+
+
+## Superseded Text
+
+Kept verbatim because decisions 017 and 018 both cite this paragraph as the argument that forced
+them, and paraphrasing the thing that was superseded makes the citation unverifiable.
+
+> **The stall is visible but not self-clearing.** A record whose verdict is always `Unknown` is
+> retained forever. `made_progress()` is false and `is_stalled()` is true, and every pass reports
+> the anomaly with the offending string — so the condition is loud, not silent. Escalating it
+> automatically would need attempt tracking or aging, which D1 deliberately does not have. This
+> decision therefore makes the open question *"whether retained work needs aging, attempt tracking,
+> or last-error metadata"* (`wiki/index.md`, Open Work) materially more urgent: it is now the only
+> route out of a vocabulary mismatch that never resolves.
+
+That last sentence is what decision 017 acted on. What turned it from urgent into blocking was
+RepForge's request for `batch_limit = 1`: at a limit of one, this record freezes the entire queue
+rather than starving a window.
 
 ## Revisit If
 

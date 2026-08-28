@@ -1,17 +1,18 @@
 //! What the invalidation runner hands back.
 
+use crate::cache::CacheVersion;
+
 /// What applying invalidations changed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct InvalidationReport<K> {
-    /// Entities the server is ahead on. A refetch is now owed for each.
-    pub marked_stale: Vec<K>,
-    /// Entities whose local version was reset to zero because the server was behind.
+    /// Entities whose server identity differs from the local one. A refetch is now owed for each.
     ///
-    /// These are also stale — a reset means refetching from nothing — but they are listed
-    /// separately because a reset is a server-side anomaly worth surfacing, not routine
-    /// invalidation.
-    pub needs_reset: Vec<K>,
+    /// D2 reported a second list, `needs_reset`, for entities where the server's version was
+    /// *lower* than the local one. It went with the ordering that produced it
+    /// (`wiki/decisions/021-cache-version-identity.decision.md`): a differing identity is a
+    /// differing identity, and there is nothing for a separate list to mean.
+    pub marked_stale: Vec<K>,
     /// Entities already in step with the server.
     pub unchanged: Vec<K>,
     /// Wire names the registry does not model, in the server's spelling.
@@ -28,7 +29,6 @@ impl<K> Default for InvalidationReport<K> {
     fn default() -> Self {
         Self {
             marked_stale: Vec::new(),
-            needs_reset: Vec::new(),
             unchanged: Vec::new(),
             unknown: Vec::new(),
         }
@@ -38,7 +38,7 @@ impl<K> Default for InvalidationReport<K> {
 impl<K> InvalidationReport<K> {
     /// Whether anything now owes a refetch.
     pub fn any_stale(&self) -> bool {
-        !self.marked_stale.is_empty() || !self.needs_reset.is_empty()
+        !self.marked_stale.is_empty()
     }
 }
 
@@ -89,8 +89,13 @@ impl PendingConflict {
 pub struct StaleEntity<K> {
     /// Which entity.
     pub key: K,
-    /// The server version this client has been told about.
-    pub version: u64,
+    /// The server version this client has been told about, or [`None`] if it never has been.
+    ///
+    /// An entity can be stale with no version. [`InvalidationRunner::mark_all_stale`] flags
+    /// everything the registry models, including entities no invalidation has ever named.
+    ///
+    /// [`InvalidationRunner::mark_all_stale`]: crate::cache::InvalidationRunner::mark_all_stale
+    pub version: Option<CacheVersion>,
     /// Whether refetching would discard unsent local work.
     pub conflict: PendingConflict,
 }

@@ -223,7 +223,11 @@ Included:
 - Outbox, dead-letter, and quarantine counts.
 - Stale entity signals.
 - SSE or websocket invalidation stream adaptation.
-- Optional loop runner integration.
+- Optional loop runner integration, including a **drain-until-idle** loop that keeps calling
+  `sync_once` until it reports `Idle` or `Offline`. Added 2026-08-27: at `batch_limit = 1` the sync
+  interval multiplies the backlog, so at the source's 5 s cadence a 200-record queue takes ~17
+  minutes rather than the ~20 s a back-to-back drain would. The loop must not spin on a retained
+  head, which is decision 017's job. See decision 018.
 
 Excluded:
 - Core storage logic.
@@ -290,13 +294,34 @@ Included:
   Ordering Policy.
 - The D1 conformance suite, run through `StoreFactory` and `FaultInjection` on both backends.
 - Atomic `apply_outcomes` spanning outbox, dead-letter, and quarantine transitions.
-- Bounded pending queries with deterministic ordering policy.
+- Bounded pending queries with a **faithful** ordering policy, not merely a deterministic one: a
+  durable, globally monotonic `seq` assigned inside the enqueue transaction and used as the primary
+  sort key (decision 016). `(created_at, mutation_id)` survives only as a tiebreak for rows written
+  before the column existed.
+- A durable `attempts` count on the outbox record, incremented when a sent record stays queued and
+  carried onto the dead letter at the bound (decision 017). The in-memory backend needs both columns
+  first, so conformance can assert them before a durable backend exists.
 - Corrupt-record visibility instead of silent row loss.
-- Cross-backend conformance tests.
+- Cross-backend conformance tests, including the single-flight profile — an *adapted* run of the
+  outbox cases at `batch_limit = 1`, where a wedged head and a violated order are observable at all
+  (decision 018). Adapted, not repeated: four cases assert multi-record batch semantics that limit 1
+  removes, and a profile that only parameterizes the shared helper leaves the cases with their own
+  runner inert. Budget it as new fixtures, not as a third macro emission.
 
 Excluded:
 - App-specific read-model stores unless they are examples.
 - Backend-specific public APIs unless compatibility notes justify them.
+
+Scope Note (2026-08-27):
+- RepForge's single-flight proposal asked D5 to shed scope that only served larger batches. The
+  answer is that D5 **gains two columns and sheds bounded-concurrency concerns it never had** — the
+  crate was already single-flight at the pass level and never grew claim-leases. See
+  `wiki/proposals/single-flight-drain.proposal.md` and
+  `wiki/references/repforge-single-flight-proposal.reference.md`.
+- Decisions 016-019 are recorded and **unimplemented**. They are design changes and need an explicit
+  go-ahead per `AGENTS.md`. Implementation order is 017, then 016, then 018's conformance profile,
+  which depends on both — its new cases assert a bound that terminates a wedged head and an order
+  that limit 1 makes observable, and neither exists before 017 and 016 land.
 
 Proof:
 - Native backend tests pass.

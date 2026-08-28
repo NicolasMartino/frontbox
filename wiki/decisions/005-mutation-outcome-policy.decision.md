@@ -6,7 +6,7 @@ Date: 2026-08-25
 Category: Sync Semantics
 Scope: How frontbox maps server mutation statuses to durable outbox dispositions.
 Sources: `raw/initial/2026-08-25T083750Z/sources/08-offline-sync.spec.md`, `raw/initial/2026-08-25T083750Z/sources/persistence/mutations.rs`
-Related: `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/decisions/003-atomic-outcome-application.decision.md`, `wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/plans/prior-art-survey.plan.md`, `wiki/references/prior-art-survey.reference.md`
+Related: `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/decisions/003-atomic-outcome-application.decision.md`, `wiki/decisions/012-unknown-mutation-status.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/018-single-flight-drain-mode.decision.md`, `wiki/decisions/019-verdict-synthesis.decision.md`, `wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/plans/prior-art-survey.plan.md`, `wiki/references/prior-art-survey.reference.md`, `wiki/proposals/single-flight-drain.proposal.md`
 
 ## Decision
 
@@ -47,8 +47,10 @@ Dead-lettering all of them is a data-loss policy.
 - `Rejected` is the only status that creates a dead letter.
 - Bounded batch size is a D1 design requirement, not a source extraction, to limit the blast radius
   of any one server verdict.
-- Retention is unbounded. Nothing in D1 ages, counts, or escalates a record that is retained
-  repeatedly, because `mark_attempt` was dropped for having no source counterpart. See Liveness.
+- ~~Retention is unbounded.~~ True of D1, and **superseded 2026-08-27 by decision 017**, which
+  bounds it with a caller-set attempt count and dead-letters at the bound. `mark_attempt` was
+  dropped in D1 for having no source counterpart; it comes back because `batch_limit = 1` makes an
+  unbounded retain a permanently frozen queue rather than a starved batch window. See Liveness.
 
 ## Liveness
 
@@ -83,6 +85,17 @@ must make it observable rather than silent, so:
 Attempt counters, aging, and skip-past policies remain deliberately out of D1. They are the natural
 fix if a real product hits a stall, and the no-progress signal is what will show whether that
 happens.
+
+**Revisited 2026-08-27 by decision 017**, and the three were not resolved alike. Attempt counting is
+adopted. Aging is rejected on the merits: a record that aged while the user was offline was never
+evaluated, and dead-lettering it would punish the operating mode this crate exists for. Skip-past is
+rejected because decision 016 makes enqueue order load-bearing, and stepping over a stuck record to
+reach the one behind it is exactly the reordering that decision forbids — which is what leaves the
+attempt bound as the only liveness mechanism still available.
+
+What prompted the revisit was not a real product hitting a stall. It was decision 012 making the
+retain permanent rather than merely long, and RepForge asking for `batch_limit = 1`, at which the
+starved window is the whole queue.
 
 ## Prior-Art Support
 
@@ -130,8 +143,11 @@ emits `outboxStatus{isEmpty}` plus enqueued/processed/failed events. If frontbox
 should dead-letter at that bound rather than discard, consistent with the policy above.
 
 **One caution on status-code classification.** `Rejected` is a server verdict, not an HTTP status
-class, and it must stay that way. Redux Offline's default treats all 4xx as permanent, and its own
-documentation immediately overrides that for `401`, refreshing the token and retrying. See
+class, and it must stay that way. (Written here about a peer library's defaults; **as of 2026-08-27
+it describes frontbox's own transport layer**, because a server that only routes produces no verdict
+for a transport to pass through. Decision 019 promotes this paragraph into a contract.) Redux
+Offline's default treats all 4xx as permanent, and its own documentation immediately overrides that
+for `401`, refreshing the token and retrying. See
 `wiki/decisions/004-transport-auth-and-offline.decision.md`.
 
 ## Revisit If

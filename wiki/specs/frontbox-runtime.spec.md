@@ -19,7 +19,8 @@ extraction.
 ## Scope
 
 D1 and D2: the outbox, dead letters, quarantine, scope isolation, one sync pass, and the cache
-version and invalidation runtime. The Dioxus adapter (D3) and the durable backends (D5) are not
+version and invalidation runtime, with the D2 cache-version amendment of 2026-08-28 (decision 021)
+applied. The Dioxus adapter (D3) and the durable backends (D5) are not
 built. Storage is in-memory.
 
 ## Divergences From The Source
@@ -63,6 +64,7 @@ caller has to honour.
 | A mutation the server returned no verdict for stays queued and counts as retained | Silence is not a verdict; reading it as one would either drop work or invent a refusal | Case 33 |
 | A status this crate has never heard of is retained and reported with the server's spelling | `Delete` would assume acceptance and `DeadLetter` would assume refusal; both lose data when wrong. Failing the response instead — the prior behaviour — discarded every *other* verdict in the batch too, permanently, since the next pass gets the same answer | Case 34 |
 | An invalidation naming an unregistered entity changes nothing and is reported | The registry defines what the application models, so a name outside it names data this client does not hold. Erroring would break every client during a rolling deploy | Cases 35, 36 |
+| Cache version is an opaque identity compared by equality; `NeedsReset` does not exist | Amended 2026-08-28 (decision 021). The source counts, and D2 shipped a `u64` compared by magnitude. A counter is bumped by idempotent `PUT` replays that change nothing, and `0` collides with the XOR hash of an empty collection, so a never-synced client compared equal to a collection the server had emptied | Cases 37, 44 |
 | Cache version and staleness persist as one unit | The version advances at invalidation, not at refetch, so only the staleness flag remembers a refetch is owed. Persisting the version alone makes a restart report an invalidated entity as fresh — worse than losing both, which fails safe | Case 39 |
 | Asking what is stale also reports what refetching would discard | Core does not perform the refetch, so it cannot gate one; a hard gate would also let a single permanently retained record freeze every entity's cache. Reporting the conflict at the moment staleness is read means an application must actively ignore it to clobber unsent work | Cases 41, 42, 43 |
 | Reads skip undecodable rows; only `sweep_corrupt` surfaces them | Sweeping inside a read makes reads mutate storage; erroring on a read lets one bad row wedge a healthy queue. The window is bounded because the runner sweeps every pass | Case 15 |
@@ -77,7 +79,8 @@ gates and documented as such in the script.
 
 Coverage sat at 89% regions / 96% lines / 93% functions when the floor was added, so the gate
 records a property that already held rather than one being aimed at. It is 90% / 96% / 93% after
-decision 011 added `src/rfc3339.rs` and its oracle.
+decision 011 added `src/rfc3339.rs` and its oracle, and 89% / 95% / 93% across 44 conformance cases
+after decision 021's amendment.
 
 The conformance suite lives in the library behind a `testing` feature rather than in `tests/`, so
 D5's SQLite and IndexedDB backends run the identical cases through `StoreFactory`,
@@ -103,6 +106,15 @@ leaves the gap visible in its test file rather than hidden behind a runtime skip
 - **A storage format version must be written from the first durable write**, not added later.
 - **`op` must be persisted and returned** across every transition, per
   `wiki/decisions/008-mutation-envelope-extensibility.decision.md`.
+- **Two further columns are decided but not built.** Added 2026-08-27 from RepForge's single-flight
+  proposal. A durable, globally monotonic `seq` assigned inside the enqueue transaction and used as
+  the primary sort key (decision 016) — global rather than per-scope, because reads are scope
+  filtered already and an `autoIncrement` object store then supplies it with no extra round trip.
+  And a durable `attempts` count, incremented when a sent record stays queued and carried onto the
+  dead letter at a caller-set bound (decision 017). Both are listed here rather than in the tables
+  above because **neither is implemented**: this page documents what is built and tested, and these
+  are constraints on a deliverable that has not started. See
+  `wiki/proposals/single-flight-drain.proposal.md`.
 - **The IndexedDB backend runs the suite through `frontbox_conformance_tests_async!`.** The
   synchronous macro drives each case with a caller-supplied `block_on`, and no such executor exists
   in a browser: an IndexedDB future suspends on a JavaScript callback that cannot fire until the

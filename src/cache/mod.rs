@@ -20,11 +20,13 @@ use serde::{Deserialize, Serialize};
 
 mod runner;
 mod store;
+mod version;
 
 pub use runner::{
     ClassifiedConflict, InvalidationReport, InvalidationRunner, PendingConflict, StaleEntity,
 };
 pub use store::CacheVersionStore;
+pub use version::CacheVersion;
 
 /// What a client knows about one entity.
 ///
@@ -38,42 +40,53 @@ pub use store::CacheVersionStore;
 ///
 /// A backend that persisted `version` alone would therefore restart, compare equal, report no
 /// change, and serve data the server explicitly invalidated. Losing *both* is safe by comparison —
-/// everything reads as version zero and is refetched. That asymmetry is why
+/// everything reads as unknown and is refetched. That asymmetry is why
 /// `wiki/decisions/015-cache-version-persistence.decision.md` makes the pair one atomically written
 /// unit rather than two fields that happen to sit near each other.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+///
+/// # `version` is an `Option`, and that is load-bearing
+///
+/// [`None`] means *nothing has ever been heard about this entity*. It is not a version, and no
+/// version compares equal to it. D2 shipped this as `0` and that was a latent bug under any
+/// content-addressed scheme: XOR's identity element is zero, so an empty collection hashes to
+/// zero, and a never-synced client would have compared equal to a collection the server had
+/// legitimately emptied — reporting no change and never refetching
+/// (`wiki/decisions/021-cache-version-identity.decision.md`).
+///
+/// This type is not `Copy`, because [`CacheVersion`] owns a `String`. Clone it explicitly.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct EntityState {
-    /// The highest server version this client has been told about.
-    pub version: u64,
+    /// The server version this client has been told about, or [`None`] if it never has been.
+    pub version: Option<CacheVersion>,
     /// Whether a refetch is owed.
     pub stale: bool,
 }
 
 impl EntityState {
-    /// State for an entity nothing is known about: version zero, not stale.
+    /// State for an entity nothing is known about: no version, not stale.
     ///
     /// This is what an unrecorded entity reads as, and it is deliberately *not* stale. An
     /// application that has never heard of a version has also never been told its data is wrong.
     pub const fn unknown() -> Self {
         Self {
-            version: 0,
+            version: None,
             stale: false,
         }
     }
 
     /// State at `version`, with a refetch owed.
-    pub const fn stale_at(version: u64) -> Self {
+    pub fn stale_at(version: impl Into<CacheVersion>) -> Self {
         Self {
-            version,
+            version: Some(version.into()),
             stale: true,
         }
     }
 
     /// State at `version`, with nothing owed.
-    pub const fn fresh_at(version: u64) -> Self {
+    pub fn fresh_at(version: impl Into<CacheVersion>) -> Self {
         Self {
-            version,
+            version: Some(version.into()),
             stale: false,
         }
     }
@@ -95,57 +108,63 @@ pub struct InvalidationEvent {
     /// Which entity changed, in the server's spelling.
     pub entity: String,
     /// The server's version for that entity after the change.
-    pub version: u64,
+    pub version: CacheVersion,
 }
 
 impl InvalidationEvent {
     /// Build an event.
-    pub fn new(entity: impl Into<String>, version: u64) -> Self {
+    pub fn new(entity: impl Into<String>, version: impl Into<CacheVersion>) -> Self {
         Self {
             entity: entity.into(),
-            version,
+            version: version.into(),
         }
     }
 }
 
 /// What comparing one server version against the local one implies.
+///
+/// # There is no "behind"
+///
+/// D2 shipped a third variant, `NeedsReset`, for a server version *lower* than the local one. It
+/// was removed by `wiki/decisions/021-cache-version-identity.decision.md` along with the ordering
+/// that produced it: a [`CacheVersion`] is compared by equality, so an identity is either the one
+/// this client holds or a different one, and a different one means refetch. Nothing could produce
+/// the variant any more, and a public variant nothing produces — with a report field that would
+/// always be empty — is worse than an absent one. `VersionUpdate` is `#[non_exhaustive]`, so
+/// restoring it later is additive.
+///
+/// An application that needs "my stored identity is unusable, start over" has
+/// [`InvalidationRunner::mark_all_stale`], which is what the reset path did anyway.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum VersionUpdate {
-    /// The server is ahead. The local version advances and a refetch is owed.
-    Updated,
-    /// The versions agree. Nothing to do, and an already-owed refetch stays owed.
-    NoChange,
-    /// The server is *behind* the local version, which cannot happen in normal operation.
+    /// The server's identity differs from the local one. The local version advances and a refetch
+    /// is owed.
     ///
-    /// It means the server's counter restarted — a database restore, a re-provisioned user, a
-    /// migration that reset the table. Advancing the local version to the smaller number would
-    /// leave the client believing it is ahead of the server forever, so the answer is to reset to
-    /// zero and refetch, which is the only state both ends can agree on.
-    NeedsReset,
+    /// This is also the answer for an entity nothing is known about, since [`None`] is not a
+    /// version and cannot compare equal to one.
+    Updated,
+    /// The identities agree. Nothing to do, and an already-owed refetch stays owed.
+    NoChange,
 }
 
 /// Compare a server version against local state.
 ///
-/// # Why this takes `u64` and not `Option<u64>`
+/// Equality only. Core does not know whether the application's server counts, hashes, or issues
+/// ETags, and it does not need to: the question a client actually asks is "is what I hold still
+/// what the server has", which equality answers for every one of those schemes.
 ///
-/// The source signature is `update_version(entity, server_version: Option<u64>)` and maps `None`
-/// onto zero, which reads as [`NeedsReset`](VersionUpdate::NeedsReset) for any client with a
-/// non-zero local version — a spurious full reset triggered by a missing field.
+/// # Why this takes a `CacheVersion` and not an `Option<CacheVersion>`
 ///
-/// Checking the source's own call sites is what settled this: **all eleven pass `Some`**. The one
-/// event shape that carries no version, `LegacyInvalidationEvent`, is declared and never used
-/// anywhere in the copied corpus. The `Option` was not a feature with a hazard attached; it was
-/// unexercised surface whose only behaviour was the hazard. A server that genuinely needs to say
-/// "this changed, version unknown" is asking for a different operation, and it should be named as
-/// one rather than smuggled in as a `None`.
-pub fn compare(local: EntityState, server_version: u64) -> VersionUpdate {
-    if server_version > local.version {
-        VersionUpdate::Updated
-    } else if server_version < local.version {
-        VersionUpdate::NeedsReset
-    } else {
-        VersionUpdate::NoChange
+/// A server saying "this changed, version unknown" is asking for a different operation and should
+/// name it as one. The source's signature was `update_version(entity, Option<u64>)` mapping `None`
+/// onto zero — a spurious full reset triggered by a missing field — and checking its call sites is
+/// what settled this: **all eleven pass `Some`**. The one event shape carrying no version,
+/// `LegacyInvalidationEvent`, is declared and never used anywhere in the copied corpus.
+pub fn compare(local: &EntityState, server_version: &CacheVersion) -> VersionUpdate {
+    match &local.version {
+        Some(local_version) if local_version == server_version => VersionUpdate::NoChange,
+        _ => VersionUpdate::Updated,
     }
 }
 
@@ -153,40 +172,63 @@ pub fn compare(local: EntityState, server_version: u64) -> VersionUpdate {
 mod tests {
     use super::*;
 
-    /// The three cases, which are the source's six `persistence/cache.rs` tests in one place.
+    /// Equality is the whole comparison, and magnitude is not consulted.
+    ///
+    /// The source's six `persistence/cache.rs` tests reduce to this plus the case below. Its third
+    /// case — a server *behind* the client — has no equivalent: there is no behind
+    /// (`wiki/decisions/021-cache-version-identity.decision.md`).
     #[test]
-    fn comparison_covers_ahead_equal_and_behind() {
+    fn comparison_is_equality_not_order() {
+        let five = CacheVersion::new("5");
         assert_eq!(
-            compare(EntityState::unknown(), 5),
+            compare(&EntityState::unknown(), &five),
             VersionUpdate::Updated,
-            "a first invalidation from version zero"
+            "a first invalidation, from nothing known"
         );
         assert_eq!(
-            compare(EntityState::fresh_at(5), 5),
+            compare(&EntityState::fresh_at("5"), &five),
             VersionUpdate::NoChange
         );
         assert_eq!(
-            compare(EntityState::fresh_at(10), 5),
-            VersionUpdate::NeedsReset,
-            "a server behind the client means the server's counter restarted"
+            compare(&EntityState::fresh_at("10"), &five),
+            VersionUpdate::Updated,
+            "a smaller identity is a different identity, not a reset"
+        );
+        assert_eq!(
+            compare(&EntityState::fresh_at("a3f8"), &CacheVersion::new("b104")),
+            VersionUpdate::Updated,
+            "identities need not be numeric at all"
         );
     }
 
-    /// Zero from zero is agreement, not an update. Otherwise a server that has never bumped an
-    /// entity would invalidate it on every reconnect forever.
+    /// A zero-valued identity is a version; never having heard one is not.
+    ///
+    /// This is the case the shipped `u64` got wrong. Under XOR set hashing an empty collection
+    /// hashes to zero, so "the server says this holds nothing" and "I have never synced" would
+    /// have compared equal and the client would never have refetched.
     #[test]
-    fn zero_against_zero_is_no_change() {
-        assert_eq!(compare(EntityState::unknown(), 0), VersionUpdate::NoChange);
+    fn a_zero_identity_is_not_an_absent_one() {
+        let zero = CacheVersion::new("0");
+        assert_eq!(
+            compare(&EntityState::unknown(), &zero),
+            VersionUpdate::Updated,
+            "an empty collection is news to a client that has never synced"
+        );
+        assert_eq!(
+            compare(&EntityState::fresh_at("0"), &zero),
+            VersionUpdate::NoChange,
+            "and having already been told it is empty is not news again"
+        );
     }
 
     /// An entity nothing is known about is not stale. Never having heard a version is not the same
     /// as having been told the data is wrong.
     #[test]
     fn unknown_state_is_not_stale() {
-        assert_eq!(EntityState::unknown().version, 0);
+        assert_eq!(EntityState::unknown().version, None);
         assert!(!EntityState::unknown().stale);
-        assert!(EntityState::stale_at(3).stale);
-        assert!(!EntityState::fresh_at(3).stale);
+        assert!(EntityState::stale_at("3").stale);
+        assert!(!EntityState::fresh_at("3").stale);
     }
 
     /// Comparison reads the version only. An entity can be stale at a version the server agrees
@@ -195,24 +237,41 @@ mod tests {
     #[test]
     fn staleness_does_not_affect_comparison() {
         assert_eq!(
-            compare(EntityState::stale_at(5), 5),
+            compare(&EntityState::stale_at("5"), &CacheVersion::new("5")),
             VersionUpdate::NoChange
         );
-        assert_eq!(compare(EntityState::stale_at(5), 6), VersionUpdate::Updated);
+        assert_eq!(
+            compare(&EntityState::stale_at("5"), &CacheVersion::new("6")),
+            VersionUpdate::Updated
+        );
     }
 
     #[test]
     fn an_event_round_trips_without_a_user_id() {
-        let event = InvalidationEvent::new("exercises", 7);
+        let event = InvalidationEvent::new("exercises", "7");
         let json = serde_json::to_value(&event).expect("serializes");
 
         assert_eq!(
             json,
-            serde_json::json!({ "entity": "exercises", "version": 7 })
+            serde_json::json!({ "entity": "exercises", "version": "7" }),
+            "the version travels as the server rendered it, not as a number"
         );
-        assert_eq!(
-            serde_json::from_value::<InvalidationEvent>(json).expect("round trips"),
-            event
-        );
+
+        let back: InvalidationEvent = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(back, event);
+    }
+
+    /// `EntityState` round-trips as a unit, which is what decision 015 requires of a backend.
+    #[test]
+    fn entity_state_round_trips_as_a_pair() {
+        for state in [
+            EntityState::unknown(),
+            EntityState::stale_at("a3f8"),
+            EntityState::fresh_at(""),
+        ] {
+            let json = serde_json::to_string(&state).expect("serializes");
+            let back: EntityState = serde_json::from_str(&json).expect("deserializes");
+            assert_eq!(back, state);
+        }
     }
 }

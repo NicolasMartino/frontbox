@@ -1,4 +1,4 @@
-//! Cases 35-43: cache versions, invalidation, and pull conflict.
+//! Cases 35-40 and 44: cache version identity, invalidation, and scoping.
 
 use super::prelude::*;
 
@@ -33,8 +33,8 @@ pub async fn case_35_an_unknown_entity_is_reported_not_applied<F: VersionStoreFa
 
     let report = runner
         .apply(&[
-            InvalidationEvent::new("exercises", 3),
-            InvalidationEvent::new("nonesuch", 9),
+            InvalidationEvent::new("exercises", "3"),
+            InvalidationEvent::new("nonesuch", "9"),
         ])
         .await?;
 
@@ -56,7 +56,7 @@ pub async fn case_35_an_unknown_entity_is_reported_not_applied<F: VersionStoreFa
     );
     assert_eq!(
         runner.store().state("exercises").await?,
-        EntityState::stale_at(3)
+        EntityState::stale_at("3")
     );
     Ok(())
 }
@@ -74,9 +74,9 @@ pub async fn case_36_reconnect_reports_unknown_names<F: VersionStoreFactory>(
 
     let report = runner
         .reconcile(&[
-            ("exercises".to_string(), 4),
-            ("retired_entity".to_string(), 2),
-            ("sessions".to_string(), 1),
+            ("exercises".to_string(), CacheVersion::new("4")),
+            ("retired_entity".to_string(), CacheVersion::new("2")),
+            ("sessions".to_string(), CacheVersion::new("1")),
         ])
         .await?;
 
@@ -90,45 +90,59 @@ pub async fn case_36_reconnect_reports_unknown_names<F: VersionStoreFactory>(
     assert_eq!(report.unknown, vec!["retired_entity".to_string()]);
     assert_eq!(
         runner.store().state("exercises").await?.version,
-        4,
+        Some(CacheVersion::new("4")),
         "an unknown name in the map must not abort the rest of it"
     );
     Ok(())
 }
 
-/// A server version below the local one resets to zero rather than adopting the smaller number.
+/// A server identity that differs from the local one is an update, whatever its magnitude.
 ///
-/// The server being behind means its counter restarted — a restore, a re-provisioned user, a
-/// migration. Adopting its number would leave the client unable to distinguish "I was reset to 3"
-/// from "I legitimately reached 3" on the next comparison. Zero is the one value both ends can
-/// agree on.
-pub async fn case_37_a_server_behind_local_needs_reset<F: VersionStoreFactory>(
+/// D2 shipped this case as `case_37_a_server_behind_local_needs_reset`: a `u64` below the local one
+/// meant the server's counter had restarted, and the client reset to zero rather than adopting the
+/// smaller number. `wiki/decisions/021-cache-version-identity.decision.md` retired both the
+/// ordering and the reset — a [`CacheVersion`] is compared by equality, so "below" is not a
+/// relation this crate can observe and a differing identity is simply a differing identity.
+///
+/// The case is kept at its number, testing the behaviour that replaced it, because a numerically
+/// smaller identity is exactly where the old rule and the new one disagree.
+pub async fn case_37_a_differing_identity_is_an_update_not_a_reset<F: VersionStoreFactory>(
     factory: &F,
 ) -> Result<(), Error> {
     let (_, versions, _) = open_both(factory).await?;
     let runner = cache(versions);
 
     runner
-        .apply(&[InvalidationEvent::new("exercises", 10)])
+        .apply(&[InvalidationEvent::new("exercises", "10")])
         .await?;
     runner.mark_fresh(&"exercises").await?;
 
     let report = runner
-        .apply(&[InvalidationEvent::new("exercises", 5)])
+        .apply(&[InvalidationEvent::new("exercises", "5")])
         .await?;
 
-    assert_eq!(report.needs_reset, vec!["exercises"]);
-    assert!(
-        report.marked_stale.is_empty(),
-        "a reset is not routine invalidation and is reported separately"
+    assert_eq!(
+        report.marked_stale,
+        vec!["exercises"],
+        "a smaller identity is routine invalidation, not an anomaly"
     );
 
     let state = runner.store().state("exercises").await?;
     assert_eq!(
-        state.version, 0,
-        "reset to zero, not down to the server's 5"
+        state.version,
+        Some(CacheVersion::new("5")),
+        "the server's identity is adopted as given, not replaced with a sentinel"
     );
-    assert!(state.stale, "a reset owes a refetch");
+    assert!(state.stale, "and a refetch is owed");
+
+    // Non-numeric identities are the point of the type, and behave identically.
+    runner
+        .apply(&[InvalidationEvent::new("exercises", "a3f8")])
+        .await?;
+    assert_eq!(
+        runner.store().state("exercises").await?.version,
+        Some(CacheVersion::new("a3f8"))
+    );
     Ok(())
 }
 
@@ -144,22 +158,26 @@ pub async fn case_38_mark_fresh_clears_staleness_only<F: VersionStoreFactory>(
     let runner = cache(versions);
 
     runner
-        .apply(&[InvalidationEvent::new("sessions", 6)])
+        .apply(&[InvalidationEvent::new("sessions", "6")])
         .await?;
     assert_eq!(
         runner.store().state("sessions").await?,
-        EntityState::stale_at(6)
+        EntityState::stale_at("6")
     );
 
     runner.mark_fresh(&"sessions").await?;
 
     let state = runner.store().state("sessions").await?;
-    assert_eq!(state.version, 6, "the version does not move on refetch");
+    assert_eq!(
+        state.version,
+        Some(CacheVersion::new("6")),
+        "the version does not move on refetch"
+    );
     assert!(!state.stale);
 
     // And a repeat of the same version is now genuinely nothing to do.
     let report = runner
-        .apply(&[InvalidationEvent::new("sessions", 6)])
+        .apply(&[InvalidationEvent::new("sessions", "6")])
         .await?;
     assert_eq!(report.unchanged, vec!["sessions"]);
     assert!(!runner.store().state("sessions").await?.stale);
@@ -179,14 +197,18 @@ pub async fn case_39_staleness_survives_a_reopen<F: VersionStoreFactory>(
     let key = scope("user:dana@tenant:acme@schema:1");
     let first = factory.open_versions(key.clone()).await?;
     InvalidationRunner::new(first, registry())
-        .apply(&[InvalidationEvent::new("exercises", 8)])
+        .apply(&[InvalidationEvent::new("exercises", "8")])
         .await?;
 
     // Reopening is how a test says "the process died and came back" to a store with no process.
     let reopened = factory.open_versions(key).await?;
     let state = reopened.state("exercises").await?;
 
-    assert_eq!(state.version, 8, "the version survived");
+    assert_eq!(
+        state.version,
+        Some(CacheVersion::new("8")),
+        "the version survived"
+    );
     assert!(
         state.stale,
         "and so did the staleness — without it the client believes invalidated data is fresh"
@@ -208,7 +230,7 @@ pub async fn case_40_versions_are_scoped<F: VersionStoreFactory>(factory: &F) ->
         .await?;
 
     InvalidationRunner::new(alice, registry())
-        .apply(&[InvalidationEvent::new("exercises", 12)])
+        .apply(&[InvalidationEvent::new("exercises", "12")])
         .await?;
 
     assert_eq!(
@@ -223,152 +245,50 @@ pub async fn case_40_versions_are_scoped<F: VersionStoreFactory>(factory: &F) ->
     Ok(())
 }
 
-/// Asking what is stale also answers what refetching it would cost.
+/// A zero-valued identity is a version; never having heard one is not.
 ///
-/// The source's listener refetches eagerly and never consults the outbox, so nothing in its call
-/// path *could* have decided otherwise — and its refetch is a `DELETE` plus re-insert, which
-/// destroys the optimistic projection of a queued mutation outright. Reporting the conflict at the
-/// moment staleness is read means an application has to actively ignore it to reproduce that.
-pub async fn case_41_staleness_reports_pending_conflict<F: VersionStoreFactory>(
+/// The regression this whole amendment turns on. D2 stored the version as a `u64` with `0` meaning
+/// "nothing known", which is sound for a counter and wrong for anything content-addressed: XOR's
+/// identity element is zero, so a collection the server has legitimately emptied hashes to zero
+/// too. Under the old model those two states were one value, `compare` answered `NoChange`, and a
+/// client that had never synced would never refetch an empty collection — silently, forever
+/// (`wiki/decisions/021-cache-version-identity.decision.md`).
+pub async fn case_44_a_zero_identity_is_distinct_from_no_identity<F: VersionStoreFactory>(
     factory: &F,
 ) -> Result<(), Error> {
-    let (outbox, versions, _) = open_both(factory).await?;
+    let (_, versions, _) = open_both(factory).await?;
     let runner = cache(versions);
 
-    runner
-        .apply(&[InvalidationEvent::new("exercises", 2)])
+    assert_eq!(
+        runner.store().state("exercises").await?,
+        EntityState::unknown(),
+        "nothing is known yet, which is not a version"
+    );
+
+    // The server says this collection is empty. That is news, not agreement.
+    let report = runner
+        .apply(&[InvalidationEvent::new("exercises", "0")])
         .await?;
-
-    // Nothing queued: replacing local state discards nothing.
-    let clean = runner.stale(&outbox).await?;
-    assert_eq!(clean.len(), 1);
-    assert_eq!(clean[0].key, "exercises");
-    assert_eq!(clean[0].conflict, PendingConflict::None);
-    assert!(!clean[0].conflict.is_possible());
-
-    // Queue a write, and the same question now carries the cost.
-    outbox.enqueue(intent(1, 1)).await?;
-    let dirty = runner.stale(&outbox).await?;
     assert_eq!(
-        dirty[0].conflict,
-        PendingConflict::Unattributed { pending: 1 },
-        "without a classifier core cannot say which entity, only that something is queued"
+        report.marked_stale,
+        vec!["exercises"],
+        "an empty collection must still be fetched once"
     );
-    assert!(dirty[0].conflict.is_possible());
-    Ok(())
-}
+    assert!(report.unchanged.is_empty());
+    assert_eq!(
+        runner.store().state("exercises").await?,
+        EntityState::stale_at("0")
+    );
 
-/// A classifier narrows the conflict to the entity it actually affects.
-///
-/// Core never reads the record itself — the body is uninterpreted JSON by decision 008 — so the
-/// caller supplies the attribution and core only counts. An unrelated queued write should not make
-/// an unrelated entity look unsafe to refresh.
-pub async fn case_42_a_classifier_narrows_the_conflict<F: VersionStoreFactory>(
-    factory: &F,
-) -> Result<(), Error> {
-    let (outbox, versions, _) = open_both(factory).await?;
-    let runner = cache(versions);
-
-    runner
-        .apply(&[
-            InvalidationEvent::new("exercises", 1),
-            InvalidationEvent::new("sessions", 1),
-        ])
+    // Having been told once, being told again is genuinely nothing to do.
+    runner.mark_fresh(&"exercises").await?;
+    let second = runner
+        .apply(&[InvalidationEvent::new("exercises", "0")])
         .await?;
-
-    // One queued write, for sessions only. `intent` builds `/api/v1/things/{n}`, so the classifier
-    // keys off the id to stand in for an application reading its own routes.
-    outbox.enqueue(intent(1, 1)).await?;
-    let classify = |record: &OutboxRecord| -> Option<&'static str> {
-        if record.mutation_id == id(1) {
-            Some("sessions")
-        } else {
-            None
-        }
-    };
-
-    let stale = runner.stale_classified(&outbox, classify).await?;
-    let for_key = |name: &str| {
-        stale
-            .iter()
-            .find(|entry| entry.key == name)
-            .expect("stale")
-            .conflict
-    };
-
-    assert_eq!(
-        for_key("sessions"),
-        PendingConflict::ForEntity { pending: 1 }
-    );
-    assert_eq!(
-        for_key("exercises"),
-        PendingConflict::None,
-        "an unrelated queued write must not make this entity look unsafe"
-    );
-
-    // A scan too small to see the whole queue refuses to claim anything is clean, because a false
-    // "nothing is queued" is the answer that loses data.
-    outbox.enqueue(intent(2, 2)).await?;
-    let narrow = InvalidationRunner::new(
-        factory
-            .open_versions(scope("user:alice@tenant:acme@schema:1"))
-            .await?,
-        registry(),
-    )
-    .with_conflict_scan(1);
-    let partial = narrow.stale_classified(&outbox, classify).await?;
+    assert_eq!(second.unchanged, vec!["exercises"]);
     assert!(
-        partial
-            .iter()
-            .all(|e| matches!(e.conflict, PendingConflict::Unattributed { .. })),
-        "an incomplete scan degrades to unattributed rather than reporting a clean partial view"
-    );
-    Ok(())
-}
-
-/// A permanently stuck outbox record does not suppress staleness reporting.
-///
-/// This is the liveness half of decision 014. Under a hard gate, one record the server never
-/// resolves would freeze every entity's cache forever — the data equivalent of a queue that never
-/// drains, which decision 005 spent its whole argument avoiding. Core reports the conflict and
-/// leaves the choice with the application, so the stale list keeps working.
-pub async fn case_43_a_stuck_record_does_not_suppress_staleness<F: VersionStoreFactory>(
-    factory: &F,
-) -> Result<(), Error> {
-    let (outbox, versions, _) = open_both(factory).await?;
-    let runner = cache(versions);
-
-    outbox.enqueue(intent(1, 1)).await?;
-
-    // A verdict this crate cannot act on: retained forever, by decision 012.
-    let sync = SyncRunner::new(
-        factory
-            .open(scope("user:alice@tenant:acme@schema:1"))
-            .await?,
-        ScriptedTransport::new(Reply::All(MutationStatus::Unknown("Throttled".into()))),
-    );
-    let report = sync.sync_once().await?;
-    assert_eq!(report.counts.unknown_status, 1);
-    assert_eq!(
-        outbox.pending_count().await?,
-        1,
-        "still queued, indefinitely"
-    );
-
-    runner
-        .apply(&[InvalidationEvent::new("exercises", 5)])
-        .await?;
-
-    let stale = runner.stale(&outbox).await?;
-    assert_eq!(
-        stale.len(),
-        1,
-        "a stuck record must not hide what needs refreshing"
-    );
-    assert_eq!(stale[0].key, "exercises");
-    assert_eq!(
-        stale[0].conflict,
-        PendingConflict::Unattributed { pending: 1 }
+        !runner.store().state("exercises").await?.stale,
+        "a repeat of a known identity must not re-dirty the entity"
     );
     Ok(())
 }

@@ -97,7 +97,9 @@ port unchanged.
   same-millisecond tie-breaker, so the two backends can disagree on the order of simultaneous
   writes. D1 orders by `(created_at, mutation_id)`, which is total and reproducible without a schema
   change. A monotonic sequence number, which is what real causal ordering would require, stays open
-  and belongs with the durable backends.
+  and belongs with the durable backends. **Settled 2026-08-27 by decision 016** — and the tie-break
+  turned out to buy less than this entry claims, since the batch itself is built in
+  `pending_batch` order.
 - **Retry/backoff policy.** Source has only fixed loop timing and no per-record attempt tracking.
 
 ### Not Source, Not Accepted
@@ -253,17 +255,27 @@ explicit user authorization.
 
 ## Open Decisions
 
-- Whether cache version state should be persisted by default. Currently in-memory only.
-- Whether mutation ordering needs a monotonic sequence number for genuine causal ordering. D1's
-  `(created_at, mutation_id)` tie-break settles determinism only. The prior-art survey raises this
-  to a durable-backend priority, but on one precedent: Replicache, where a mutation id
-  "describe[s] a causal order to mutations from this client, and that order is respected by the
-  server." CouchDB, RxDB, and PowerSync were withdrawn as evidence on verification.
+- ~~Whether cache version state should be persisted by default.~~ **Settled 2026-08-27 by decision
+  015**: durable, with version and staleness as one indivisible unit. Persisting the version alone
+  would let a client believe an invalidated entity is fresh.
+- ~~Whether mutation ordering needs a monotonic sequence number for genuine causal ordering.~~
+  **Settled 2026-08-27 by decision 016**: yes, globally monotonic and assigned by the store inside
+  the enqueue transaction. The deciding evidence was not the prior art recorded below — it was in
+  this crate. `runner.rs:263-264` builds the batch from `pending_batch` order, so a mis-sorted queue
+  is a mis-*ordered* batch and the hazard exists today at `batch_limit = 100`; the tie-break's
+  determinism never protected against it. As originally recorded: D1's `(created_at, mutation_id)`
+  tie-break settles determinism only, and the prior-art survey raised this to a durable-backend
+  priority on one precedent, Replicache, where a mutation id "describe[s] a causal order to
+  mutations from this client, and that order is respected by the server." CouchDB, RxDB, and
+  PowerSync were withdrawn as evidence on verification.
 - Whether local read model persistence belongs in core or should be a companion trait implemented
   by each app.
-- Whether to build attempt count, last-error, aging, or retry/backoff policy beyond the D1
-  no-progress signal. Reference designs exist: Redux Offline's `retry() -> null` discard over a
-  1s-to-1h schedule, Workbox's `maxRetentionTime`, and Amplify's `outboxStatus{isEmpty}`.
+- Whether to build ~~attempt count~~, last-error, ~~aging~~, or retry/backoff policy beyond the D1
+  no-progress signal. **Partly settled 2026-08-27 by decision 017**: attempt counting is adopted and
+  dead-letters at a caller-set bound; aging is rejected, because a record that aged while the user
+  was offline was never evaluated. Last-error metadata and backoff stay open. Reference designs
+  exist: Redux Offline's `retry() -> null` discard over a 1s-to-1h schedule, Workbox's
+  `maxRetentionTime`, and Amplify's `outboxStatus{isEmpty}`.
 - Whether quarantine is a distinct store or a status in a single outbox table. No surveyed
   local-first system settles this; the pattern's prior art is message-broker poison-message
   handling.

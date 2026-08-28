@@ -674,3 +674,349 @@ Pages affected: `wiki/plans/d2-cache-invalidation.plan.md` (status and implement
 `wiki/decisions/015-cache-version-persistence.decision.md`,
 `wiki/specs/frontbox-runtime.spec.md`, `wiki/roadmaps/extraction.roadmap.md`, `wiki/index.md`,
 `README.md`, `AGENTS.md`
+
+## [2026-08-27] decision | Answered RepForge's single-flight proposal; decisions 016-019
+
+RepForge is rewriting its backend to include frontbox and kafkaman, and sent a proposal asking that
+`batch_limit = 1` become frontbox's default, with a durable monotonic sequence added to D5 as the
+price. Recorded at `wiki/references/repforge-single-flight-proposal.reference.md` — received in
+conversation, not copied into `raw/`, which is human-curated. Answered at
+`wiki/proposals/single-flight-drain.proposal.md`.
+
+**Their three claims about frontbox's code all check out**, verified against `src/`: `pending_batch`
+already takes a bound and `with_batch_limit` already clamps to 1; `sync_once` is already
+single-flight via `in_flight: Cell<bool>` and `InFlightGuard`; `apply_outcomes` is already atomic.
+Their reading of decision 010's expiring premise is right, and decision 019 takes it further.
+
+**The ledger was wrong in both directions, and that is what produced four decisions.**
+
+- **The ordering ask is a bug fix, not a price.** They argued a bad sort was survivable under
+  batching because the server evaluates a batch in request order. It is not: `runner.rs:263-264`
+  builds the request from `pending_batch` order, so a mis-sorted queue is a mis-*ordered batch* and
+  the set-before-session hazard exists today at `batch_limit = 100`. Batching never bought causality.
+  Accepted as **decision 016** — with one change: make the sequence globally monotonic rather than
+  per-scope, since reads are scope-filtered already and per-scope is the version that makes their
+  IndexedDB question hard.
+- **The cost they missed is the frozen head.** `pending_batch` is oldest-first with no cursor. At
+  100 a retained record starves its window; at 1 it freezes the whole queue permanently. Their §4
+  argues both that `Retain` is unreachable and that decision 012 matters more during the migration —
+  and 012's `Unknown` is a reachable *permanent* retain. Skipping the head is ruled out by decision
+  016. **Decision 017** bounds retention with an attempt count and dead-letters at the bound,
+  rejecting aging on the merits and closing an open item carried since D1.
+- **`Blocked` loses its producer but keeps its hazard.** With no BFF nothing produces a
+  `MutationBatchResponse`, so the transport synthesizes verdicts and the *client* now decides
+  terminal versus transient. A missing-parent `404` is a 4xx that looks terminal and is not.
+  Decision 005's closing caution about Redux Offline now describes frontbox's own transport layer;
+  **decision 019** promotes it into a contract on `SyncTransport`.
+- **The default is refused.** `with_batch_limit(1)` already works, so the real ask is conformance
+  coverage, which is granted as a profile in **decision 018**. The default stays 100, because at 1
+  the liveness argument depends on decision 017 being switched on and defaults belong at the safe end
+  of a setting.
+
+**Two corrections to their numbers.** Their ~20 s drain estimate for a 200-record backlog assumes
+back-to-back requests; `sync_once` sends one batch per call, and at the source's
+`SYNC_INTERVAL_MS = 5000` (`persistence/mutations.rs:731`) that is ~17 minutes. And their
+pull-gating question was already answered by decision 014 the same day — core does not gate a pull
+it does not perform, and D2's per-entity classifier dissolves the starvation their two suggested
+directions would both inherit.
+
+Decisions 016-019 are **recorded and unimplemented**; they are design changes gated by `AGENTS.md`.
+Implementation order is 017, then 016, then 018's profile, with 019 as documentation.
+
+Pages affected: new `wiki/references/repforge-single-flight-proposal.reference.md`,
+`wiki/proposals/single-flight-drain.proposal.md`,
+`wiki/decisions/016-monotonic-enqueue-sequence.decision.md`,
+`wiki/decisions/017-bounded-retention.decision.md`,
+`wiki/decisions/018-single-flight-drain-mode.decision.md`,
+`wiki/decisions/019-verdict-synthesis.decision.md`. Amended
+`wiki/decisions/005-mutation-outcome-policy.decision.md` (unbounded retention superseded; the
+skip-past deferral now rejected on the merits), `wiki/decisions/010-batch-wire-format.decision.md`
+(premise note), `wiki/decisions/012-unknown-mutation-status.decision.md` (the permanent stall now
+resolved), `wiki/decisions/014-pull-gating.decision.md` (confirmed against a second consumer),
+`wiki/roadmaps/extraction.roadmap.md` (D3 drain loop, D5 scope), `wiki/index.md`.
+
+## [2026-08-27] lint | Stale-claim sweep after decisions 016-019
+
+The consistency sweep for the decisions above found four claims elsewhere in the wiki that they
+falsify, plus one that predated them.
+
+- `wiki/proposals/extraction-boundary.proposal.md` `## Open Decisions` still listed the monotonic
+  sequence as open (settled by 016) and attempt count and aging as unbuilt (partly settled by 017).
+  It also still listed **cache version persistence** as open, which decision 015 settled on
+  2026-08-27 and which this sweep caught rather than the D2 one. All three struck through with the
+  original wording preserved.
+- The same page's "Deterministic tie-break ordering" entry claimed the `(created_at, mutation_id)`
+  tie-break made a sequence number a durable-backend concern. Annotated: the tie-break bought less
+  than the entry says, because the batch is built in `pending_batch` order.
+- `wiki/plans/d1-core-cache-runtime.plan.md` said a monotonic sequence "remains open". Marked
+  settled with a forward pointer, and the surrounding note left standing as the D1-state record.
+- `wiki/specs/frontbox-runtime.spec.md` gained the two pending D5 columns under
+  `## Constraints This Places On D5`, flagged explicitly as decided-but-unbuilt so the page keeps
+  its as-built-and-tested contract.
+
+**Deliberately not changed:** `src/store.rs:73`, `src/record.rs:190`, `src/runner.rs:152`,
+`src/testing/cases/ordering.rs:47`, and `src/testing/cases/invalidation.rs:343` all still describe
+determinism-without-causality and unbounded retention. Those doc comments are accurate — decisions
+016 and 017 are unimplemented, and editing them would make the code claim behaviour it does not
+have.
+
+`scripts/verify.sh` re-run after the sweep: ALL GATES PASSED, 4001 regions at 89.00%, unchanged,
+which is the check that no code was touched.
+
+## [2026-08-27] amend | Review fixes to decisions 012, 017, 018, 019 and the single-flight response
+
+External review of the single-flight write-up raised six findings. All six were checked against the
+code and all six held, two of them more strongly than the review stated.
+
+- **Decision 018's conformance claim was wrong** and was the review's high finding. It said the
+  outbox case list could be re-run unchanged at `batch_limit = 1` as "a third emission of the same
+  cases". The suite disagrees. Four cases lose their subject entirely: case 06 applies five statuses
+  in one atomic call (`src/testing/cases/status.rs:91`), case 19 needs `Blocked`, which by
+  definition names a predecessor *in the same batch* (`cases/liveness.rs:15`), case 32's contested
+  verdict needs an uncontested one beside it (`cases/anomalies.rs:46`), and case 34 asserts an
+  unknown status "must not spoil the verdicts around it" (`cases/anomalies.rs:160`). Cases 07, 20,
+  and 33 assert counts equal to the seed size and need parameterizing. Beyond the review's finding:
+  cases 10 and 21 call `.with_batch_limit(2)` and cases 19, 28, 30 call `SyncRunner::new` directly,
+  so a profile that parameterizes only the shared `runner()` helper (`cases/mod.rs:86`) leaves them
+  running at their own limit — passing, testing nothing, and reporting green. Decision 018 gains
+  `## What The Profile Actually Costs`; the correction is propagated to `wiki/index.md`, the roadmap,
+  and the response's Implementation Status.
+- **Decision 018 also contradicted itself.** Its `Revisit If` already said multi-verdict handling is
+  "exercised by cases the single-flight profile cannot reach" — the same cases the Decision section
+  claimed would re-run unchanged. Now consistent, and the four are named.
+- **Decision 017 said a failed transport means the record was "never evaluated".** False for that
+  half of the pairing: decision 004 defines `Error::Transport` as a request that *was* attempted, and
+  the runner says so at `src/runner.rs:275`, so the server may have evaluated it and only the
+  response was lost. Rewritten to separate offline (never sent) from transport failure (no usable
+  verdict), which strengthens the argument — the count measures verdicts received, not requests made.
+- **Decision 019 claimed "no server produces one" unscoped.** True of RepForge's redesign, not of
+  frontbox's protocol. Scoped, with the note that a transport passing a genuine batch response
+  through synthesizes nothing and so owes none of the three obligations. Decision 010's echo of the
+  same sentence scoped to match.
+- **The RepForge proposal reference claimed `Status: Sourced`**, the label the other three reference
+  pages carry on the strength of a `raw/` path. This one has none. Restatused
+  `Recorded from conversation; not filed in raw/`, and the provenance note now says plainly that the
+  page is a paraphrase and that nothing in it should be quoted as RepForge's own words. Four accepted
+  decisions rest on it, so filing the verbatim original under `raw/` is a standing ask on a human.
+- **Decision 012's superseded paragraph was interleaved with its replacement.** Split: current policy
+  in `## Consequences`, original text preserved verbatim under `## Superseded Text` because 017 and
+  018 both cite it as the argument that forced them.
+
+No code changed. `scripts/verify.sh` reports the same figures as before the amendment, which is the
+check that confirms it.
+
+## [2026-08-28] decision | Observability surface (020); RepForge proposal re-supplied verbatim
+
+The RepForge single-flight proposal was supplied a second time, framed as carrying observability
+changes. It does not: the text is the same document already recorded and answered on 2026-08-27, and
+the word "observability" does not appear in it. Recorded here because a reader comparing the two
+dates will otherwise look for a delta that is not there.
+
+Two things were still worth doing.
+
+- **Provenance improved.** The second copy is verbatim, so
+  `references/repforge-single-flight-proposal.reference.md` gains `## Verbatim Passages` quoting the
+  six passages decisions 016-019 turn on — including the §4 contradiction, where `Retain` is called
+  "unreachable" four rows above the claim that decision 012 becomes "more valuable, not less". The
+  page is still not in `raw/` and its Status still says so; the gap is narrower, not closed.
+- **Decision 020 written**, covering frontbox's side of the convergence the request implies.
+
+Decision 020 records the built model — core emits nothing, diagnostics are returned — and why it is
+not an oversight. `scripts/verify.sh` gates no date library in the runtime graph, so frontbox cannot
+timestamp an event, which for an offline-first queue would date every disconnected write to the
+reconnect. Decision 001 and the `!Send` gate rule out handing state to a collector that outlives the
+call, which is the useful half of tracing integration.
+
+Two findings from reading the code:
+
+- **The report types are the only public types that do not derive `Serialize`.** `OutboxRecord`,
+  `DeadLetterRecord`, `MutationId`, `OperationMeta`, and the cache types all do — storage required
+  it. `SyncReport`, `SyncOutcomeCounts`, `SyncPass`, `Anomaly`, `AnomalyKind` do not, because
+  nothing needed it until now. So the types a converged pipeline most wants to ship are exactly the
+  ones that cannot leave the process unmapped. Additive and free while `publish = false`.
+- **Single-flight is an observability regression the proposal does not price.** At `batch_limit = 1`
+  the 200-record backlog from its §7 produces 200 reports rather than 2, each with counts of 0 or 1.
+  Decision 018 had this as a readability note; it is amended to record that aggregation moves out of
+  the library into every caller, and that D3's drain-until-idle loop is the natural aggregation
+  boundary. That is a second, independent argument for a loop decision 018 already owed on liveness
+  grounds.
+
+Decision 017 amended: last-error metadata is promoted from "a separate question" to load-bearing,
+being the only proposed field that survives a restart and explains why a record is still queued.
+
+No code changed.
+
+## [2026-08-28] decision | RepForge revision v2: read model, trace context, sink boundary (021-023)
+
+RepForge revised the 2026-08-27 proposal. The revision withdraws "not asking D2 to change" — which
+its own preface calls the most load-bearing claim in the v1 document, correctly — and adds §5.2
+(`traceparent` on the record), §5b (the whole read side), and §5b.6 (the observability sink
+boundary). Recorded under `## The 2026-08-28 Revision` in the reference; answered at
+`proposals/repforge-read-model-convergence.proposal.md`.
+
+**A correction to our own work first.** Decision 020, written earlier the same day, argued that
+in-library `tracing` emission was *structurally blocked* by two of the crate's gates. Both claims
+were wrong and were checked before withdrawal: `no_send_bound` greps `src/` for `Send` bounds and a
+`tracing::info!` adds none, and `tracing` depends on `pin-project-lite`, `tracing-core`, and
+`once_cell` — no date crate, so `date_crate_in_runtime_graph` stays quiet. The clock argument was
+wrong too: a subscriber stamps at emit time in-process, so an offline pass is stamped during the
+offline pass. §5b.6 is accepted. One limit survives and it is the useful one: a span cannot model
+enqueue-to-send, because a span is in-process and that interval spans restarts and days — which is
+exactly why §5.2's durable trace context is right.
+
+Three decisions.
+
+- **021 — a cache version is an opaque identity, not an ordered counter.** Their Q4 asks whether
+  decision 015 assumes ordering. It does, and so does shipped code: `compare` at `src/cache/mod.rs:142`
+  reaches `VersionUpdate::NeedsReset` *only* through `<`, so under a set hash that public variant
+  loses its producer. Beyond their question: **XOR's identity is zero, so an empty set hashes to
+  zero**, and `EntityState::unknown()` is documented as "version zero, not stale" — making *never
+  synced* and *legitimately empty* the same stored value, which `compare` answers `NoChange` to.
+  That is the same silent-failure class §5b.1 uses to reject `max(updated_at)`, reappearing inside
+  the replacement.
+- **022 — trace context is durable, caller-supplied, stamped at enqueue.** Storage accepted;
+  generation declined. A W3C `traceparent` is mostly randomness, frontbox's only randomness is
+  behind the `v4` feature, and `scripts/verify.sh:30` builds `--no-default-features` for wasm to
+  prove that path works. The crate already has this rule for `MutationId` and for the same reason.
+- **023 — frontbox tracks what is stale, not what the data is.** §5b.3's row shape makes frontbox a
+  read-model store, which D5 excludes in one line; the revision does not flag it as a scope change
+  and it is the largest one in the document. The justification §5b.4 gives is about the *marker*,
+  which a `(scope, entity, row_id, stale)` table grants without the blob. Their permanent-data-hole
+  argument is the strongest passage in the revision, and decision 017 widens the hole it closes — a
+  record dead-lettered at the attempt bound also terminates with the server state unchanged.
+
+Also answered from built code rather than opinion: Q6 (the registry already takes URL-segment names
+— `EntityKey` is implemented for `String` and `&'static str`) and §5b.5 (the two dead-letter causes
+already map onto `DeadLetterRecord::error` being `Some` or `None`, which decision 017 chose
+deliberately). Decisions 014 and 015 amended with cross-links. 023 resolves the long-standing open
+item on read-model persistence.
+
+No code changed.
+
+## [2026-08-28] build | D2 amendment: decision 021 implemented
+
+Authorized and built. The first change to shipped code since D1, and it was affordable only because
+`publish = false`.
+
+- **`CacheVersion` is new** (`src/cache/version.rs`, 115 lines): a newtype over `String`, serialized
+  transparently, stored byte-exact with no trim or case fold — the reasoning `ScopeKey` uses, since
+  every normalization is non-injective. The empty string is accepted, per decision 008's rule about
+  fields core never reads.
+- **`EntityState::version` is `Option<CacheVersion>`.** `None` means "never heard", which is the
+  whole point: under XOR set hashing an empty collection hashes to zero, so the old `0` sentinel
+  made *never synced* and *legitimately empty* one value. `EntityState` loses `Copy`, the same trade
+  decision 012 made for `MutationStatus`.
+- **`compare` is equality only**, and `VersionUpdate::NeedsReset` was removed along with
+  `InvalidationReport::needs_reset`.
+- **Event collapse is last-wins**, not highest. This was a fifth ordering assumption that decision
+  021 had missed — `reconcile_pairs` used `(*current).max(version)`. Last-wins is also more faithful
+  independently of hashing: under `max`, an entity that changed and then changed *back* kept the
+  intermediate version forever.
+
+**On `NeedsReset`:** decision 021 left this unpicked and leaned to the 005 precedent — keep the
+variant unreachable, as `MutationStatus::Blocked` is kept — "absent a reason". Implementing produced
+the reason. `Blocked` survives because a *server* can still send it; `VersionUpdate` is produced by
+`compare`, which is ours alone, so keeping it would have meant an unreachable arm and a report field
+that is always empty. The enum is `#[non_exhaustive]`, so restoring it is additive; a surface that
+reports a category which cannot occur is not free. Recorded on the decision page.
+
+**Conformance:** case 37 rewritten in place as
+`case_37_a_differing_identity_is_an_update_not_a_reset` — it keeps its number because a numerically
+smaller identity is exactly where the old rule and the new one disagree. **Case 44 added**, pinning
+the zero-sentinel bug directly: a client that has never synced must still fetch a collection the
+server says is empty. `src/testing/cases/invalidation.rs` split at 444 lines, with cases 41-43 moved
+to `pull_conflict.rs`.
+
+`ALL GATES PASSED`: 44 conformance cases, coverage 89.06% regions / 95.23% lines / 92.56% functions
+against an 80% floor, both wasm builds, clippy clean on native and wasm.
+
+Noted in passing and **not fixed**, being outside this amendment: `cargo doc` reports 17 unresolved
+intra-doc links in `src/id.rs`, `src/lib.rs`, `src/memory/mod.rs`, and `src/runner.rs`. All predate
+this change and none is in a file it touched. `cargo doc` is not one of `scripts/verify.sh`'s gates,
+which is why they accumulated silently.
+
+## [2026-08-28] lint | Open-decisions register
+
+Nine genuinely open decisions were scattered across `wiki/index.md`'s Open Work, six decision pages'
+Revisit If sections, and two proposals, mixed in with settled items, work items, and asks addressed
+to RepForge. Collected into `references/open-decisions.reference.md` with origin, options,
+consequences, and a recommendation for each.
+
+The organizing idea is that urgency here is not importance — it is **which door closes first**.
+Three clocks: D5 (schema, closes at the first durable write), publication (public API, closes at
+first publish), and RepForge's own design settling. A fourth group has no clock and is listed
+separately so it is not confused with the rest.
+
+Two things the collection exposed that the scattered version hid.
+
+- **The index files "total order versus partial order" as a sequence question and it is not one.**
+  Decision 016 chose a *globally* monotonic `seq` because global monotonicity gives per-scope for
+  free once reads are scope-filtered — and that transfers to origins unchanged. The sequence design
+  already serves both orders. What a partial order needs is the ability to partition by origin, and
+  core does not know what an origin is. So the real decision is *classifier or column*, and those
+  are on different clocks: a classifier is additive and free forever, a column has to land with
+  `seq`, `attempts`, and `traceparent` or become a fourth migration.
+- **Last-error metadata makes server error bodies durable on the client device.** A rejection
+  payload carries whatever the server put in it. That is a data-retention decision and not only a
+  schema one, and it is why the field should be transport-shaped rather than a captured raw body.
+
+Also recorded: the argument that settles the `ScopeKey` storage-name question. Reversible encoding
+looks valuable and is not needed, because decision 009 already stamps `scope` on every record, so
+the mapping back is recoverable from any row's contents. That removes reversibility's only real
+advantage and leaves the filesystem's 255-byte component limit, where hashing wins outright.
+
+`wiki/index.md` Open Work now points at the register and its stale gate figures were refreshed to
+decision 021's numbers (44 conformance cases, 89.06% / 95.23%).
+
+## [2026-08-29] decision | RepForge answered section C; register now 11 open, decision 019 improved
+
+All four section C questions came back, recorded at `references/repforge-section-c-answers.reference.md`.
+Asking them first was the right sequencing and it paid: **the terminality signal exists because the
+question was asked.** Every RepForge service error now carries a required `retry` field of
+`terminal` / `transient` / `conflict`, which collapses decision 019's obligation from a judgment
+into a lookup for that consumer.
+
+Decision 019 is amended rather than retired, for four reasons. Its rules still bind the fallback
+path, since gateway and transport errors never reach a service and carry no envelope. They bind
+every *other* consumer's transport, because this is a library. **`transient` gives `Blocked` a
+producer back** — RepForge argued it lost one under single-flight, and a transport synthesizing a
+retaining status from `retry: transient` is a producer on the client side, which vindicates decision
+005's refusal to delete the variant from a direction nobody argued at the time. And `conflict` is a
+third end state the type system does not separate: all three land as dead letters,
+`Some(rejection)` versus `None` separates decision 017's case, and `RemoteRejection::code` is where
+the other two differ — a convention rather than a guarantee, now stated.
+
+**C1 confirmed the accumulator seeds at zero**, so conformance case 44's scenario is live and
+decision 021 does not simplify. RepForge volunteered this against their own interest. Their
+follow-on — that zero-versus-never-computed *"touches your side as much as ours"* — is wrong in our
+favour: `EntityState::version` has been `Option<CacheVersion>` since 2026-08-28 and case 44 asserts
+it, and their own suggested remedy is what was built. What remains is theirs alone, since `SetHash`
+derives `Default` and a server that never computed an accumulator reports the same 32 zero bytes as
+one whose collection is empty. No client representation can reach that.
+
+**A correction to this project's own work.** RepForge read decision 018's ~17 min figure as
+RTT-bound and inferred it implied ~10,000 queued mutations. It is cadence-bound: 200 records at one
+per pass against the source's `SYNC_INTERVAL_MS = 5000` is 1000 s. The arithmetic in 018 was right
+and stated its basis, but `references/open-decisions.reference.md` compressed it to "~20 s versus
+~17 min", which reads as two competing estimates. They were never competing — ~20 s is the floor a
+back-to-back drain reaches and ~17 min is what the source's loop delivers, and **the gap between
+them is the whole value of D3's drain-until-idle loop.** Fixed in both places.
+
+Two new open decisions, taking the register from nine to eleven.
+
+- **10 — does the outbox carry replayable request preconditions.** Their `conflict` is defined as
+  `If-Match` failing against the current row hash, and `MutationIntent` has no field for a
+  precondition; there is no header concept anywhere in `src/`. An `If-Match` only means anything if
+  it carries the version the user was looking at *at enqueue* — computed at drain it is vacuous. So
+  it is decision 022's shape exactly, and that is now two instances of "caller-supplied, captured at
+  enqueue, replayed as a header", which is where the general case becomes worth considering. It may
+  still be app-side: a transport could hold the base hash in the application's read model keyed by
+  `mutation_id`. Ask before designing. The two differ in one way that matters — losing trace context
+  degrades diagnostics, losing a precondition silently disables conflict detection.
+- **11 — what frontbox contributes to the dead-letter report body.** They invited input and made this
+  project's own argument back at it. Cheapest item on the register: the field list is already known
+  from `DeadLetterRecord`, with the notes that `error: None` is information rather than a gap
+  (decision 017) and that `scope` must not be sent, being caller-composed local identity under
+  decision 009.
+
+No code changed.

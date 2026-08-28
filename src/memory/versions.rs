@@ -41,7 +41,7 @@ impl CacheVersionStore for InMemoryVersionStore {
             .borrow()
             .versions
             .get(&(self.scope.clone(), entity.to_string()))
-            .copied()
+            .cloned()
             // Not an error: never having heard a version is a normal starting condition.
             .unwrap_or_else(EntityState::unknown))
     }
@@ -58,7 +58,7 @@ impl CacheVersionStore for InMemoryVersionStore {
             .versions
             .iter()
             .filter(|((scope, _), _)| *scope == self.scope)
-            .map(|((_, entity), state)| (entity.clone(), *state))
+            .map(|((_, entity), state)| (entity.clone(), state.clone()))
             .collect())
     }
 
@@ -77,7 +77,7 @@ impl CacheVersionStore for InMemoryVersionStore {
                     "one entity named twice in a single put: {entity:?}"
                 )));
             }
-            staged.push((key, *state));
+            staged.push((key, state.clone()));
         }
 
         let mut state = self.backend.state.borrow_mut();

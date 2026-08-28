@@ -6,7 +6,7 @@ Date: 2026-08-27
 Category: Cache Versioning
 Scope: What happens when an entity is invalidated while the local outbox still holds unsent mutations, and where the decision to refetch anyway belongs.
 Sources: `raw/initial/2026-08-25T083750Z/sources/listener.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/native.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/web.rs`, `wiki/references/prior-art-survey.reference.md`
-Related: `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/decisions/012-unknown-mutation-status.decision.md`, `wiki/proposals/extraction-boundary.proposal.md`, `wiki/plans/d2-cache-invalidation.plan.md`
+Related: `wiki/decisions/023-read-model-boundary.decision.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/proposals/single-flight-drain.proposal.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/decisions/012-unknown-mutation-status.decision.md`, `wiki/proposals/extraction-boundary.proposal.md`, `wiki/plans/d2-cache-invalidation.plan.md`
 
 ## Decision
 
@@ -104,6 +104,34 @@ bug.
   conclusion for the case where the queue is larger than the scan. It now degrades every entity to
   `Unattributed` rather than reporting a clean partial view, because a false "nothing is queued" is
   the answer that loses data. Case 42 covers it.
+
+## Confirmed Against A Second Consumer
+
+**2026-08-27.** RepForge's single-flight proposal raised pull-gating starvation independently, and
+without having seen this page: under a slower drain the outbox stays non-empty longer, so a pull
+gated on "outbox empty" may never fire. Their two suggested directions were to gate on "no terminal
+failures pending" or to allow a pull while the queue drains cleanly.
+
+Both keep a whole-queue condition and therefore inherit a whole-queue starvation. This decision's
+answer is better and already shipped: the condition to stop using is the global one.
+`stale_classified` attributes conflict **per entity**, so an application gates on "a mutation for
+*this* entity is queued" — which a full queue of unrelated work does not satisfy. That the same
+hazard was found from the outside is some evidence the decision is aimed at a real problem; that the
+outside proposal reached for a global condition anyway is some evidence the per-entity classifier is
+the part worth documenting loudly. See `wiki/proposals/single-flight-drain.proposal.md` §6.
+
+## Extended 2026-08-28 By Decision 023
+
+RepForge's 2026-08-28 revision supplies the position this decision declined to take for them: do not
+gate on emptiness at all, skip conflicting rows, and verify when the outbox empties *however* it
+emptied. That is compatible with this decision rather than a departure from it — it is a caller
+acting on the conflict this decision reports, which is what "expose the state and let the caller
+decide" was for.
+
+Two things carry over into decision 023. The conflict signal here is entity-granular
+(`PendingConflict::ForEntity { pending }`), and the row-level skip needs finer markers. And core
+still does not perform the refetch, so it reports the verification trigger rather than running the
+pass — the same reasoning that kept it out of the pull.
 
 ## Revisit If
 

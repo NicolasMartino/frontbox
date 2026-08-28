@@ -191,13 +191,14 @@ macro_rules! __frontbox_cache_suite {
             cases: [
                 case_35_an_unknown_entity_is_reported_not_applied,
                 case_36_reconnect_reports_unknown_names,
-                case_37_a_server_behind_local_needs_reset,
+                case_37_a_differing_identity_is_an_update_not_a_reset,
                 case_38_mark_fresh_clears_staleness_only,
                 case_39_staleness_survives_a_reopen,
                 case_40_versions_are_scoped,
                 case_41_staleness_reports_pending_conflict,
                 case_42_a_classifier_narrows_the_conflict,
                 case_43_a_stuck_record_does_not_suppress_staleness,
+                case_44_a_zero_identity_is_distinct_from_no_identity,
             ]
         }
     };

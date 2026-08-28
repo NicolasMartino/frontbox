@@ -1,6 +1,8 @@
 //! Applying invalidations, reconciling on reconnect, and reporting pull conflict.
 
-use crate::cache::{compare, CacheVersionStore, EntityState, InvalidationEvent, VersionUpdate};
+use crate::cache::{
+    compare, CacheVersion, CacheVersionStore, EntityState, InvalidationEvent, VersionUpdate,
+};
 use crate::entity::{EntityKey, EntityRegistry};
 use crate::error::Error;
 
@@ -62,9 +64,16 @@ where
 
     /// Apply invalidation events.
     ///
-    /// Events for the same entity collapse: the highest version wins, which is what makes applying
-    /// a burst of events equivalent to applying the last one. The whole batch commits in a single
+    /// Events for the same entity collapse: the **last** one wins, which is what makes applying a
+    /// burst equivalent to applying the most recent event. The whole batch commits in a single
     /// [`put`](CacheVersionStore::put).
+    ///
+    /// D2 collapsed by taking the highest version. That was a third ordering assumption, alongside
+    /// the comparison and the zero sentinel, and it retired with them
+    /// (`wiki/decisions/021-cache-version-identity.decision.md`): identities do not order, so
+    /// "highest" has no meaning. Last-wins is also the more faithful rule — the final event is the
+    /// server's current answer, and under the old rule an entity that changed and then changed
+    /// *back* would have kept the intermediate version forever.
     ///
     /// # Errors
     ///
@@ -79,7 +88,7 @@ where
 
         for event in events {
             match self.registry.parse(&event.entity) {
-                Some(key) => named.push((key, event.version)),
+                Some(key) => named.push((key, event.version.clone())),
                 None => report.unknown.push(event.entity.clone()),
             }
         }
@@ -100,11 +109,11 @@ where
     /// A storage failure.
     pub async fn reconcile(
         &self,
-        server_versions: &[(String, u64)],
+        server_versions: &[(String, CacheVersion)],
     ) -> Result<InvalidationReport<R::Key>, Error> {
         let events: Vec<InvalidationEvent> = server_versions
             .iter()
-            .map(|(entity, version)| InvalidationEvent::new(entity.clone(), *version))
+            .map(|(entity, version)| InvalidationEvent::new(entity.clone(), version.clone()))
             .collect();
         self.apply(&events).await
     }
@@ -112,34 +121,27 @@ where
     /// Apply already-parsed `(key, version)` pairs.
     async fn reconcile_pairs(
         &self,
-        pairs: Vec<(R::Key, u64)>,
+        pairs: Vec<(R::Key, CacheVersion)>,
         report: &mut InvalidationReport<R::Key>,
     ) -> Result<(), Error> {
-        // Collapse repeats to the highest version first, so a burst of events for one entity is one
+        // Collapse repeats to the last one seen, so a burst of events for one entity is one
         // decision and one write rather than a sequence whose intermediate states could be
         // interrupted by a crash.
-        let mut highest: Vec<(R::Key, u64)> = Vec::with_capacity(pairs.len());
+        let mut latest: Vec<(R::Key, CacheVersion)> = Vec::with_capacity(pairs.len());
         for (key, version) in pairs {
-            match highest.iter_mut().find(|(seen, _)| *seen == key) {
-                Some((_, current)) => *current = (*current).max(version),
-                None => highest.push((key, version)),
+            match latest.iter_mut().find(|(seen, _)| *seen == key) {
+                Some((_, current)) => *current = version,
+                None => latest.push((key, version)),
             }
         }
 
-        let mut updates = Vec::with_capacity(highest.len());
-        for (key, version) in highest {
+        let mut updates = Vec::with_capacity(latest.len());
+        for (key, version) in latest {
             let local = self.store.state(key.as_str()).await?;
-            match compare(local, version) {
+            match compare(&local, &version) {
                 VersionUpdate::Updated => {
                     updates.push((key.as_str().to_string(), EntityState::stale_at(version)));
                     report.marked_stale.push(key);
-                }
-                // Reset to zero rather than down to the server's number. Both ends can agree on
-                // zero; adopting a version the client has already passed cannot be distinguished
-                // later from having legitimately reached it.
-                VersionUpdate::NeedsReset => {
-                    updates.push((key.as_str().to_string(), EntityState::stale_at(0)));
-                    report.needs_reset.push(key);
                 }
                 // Deliberately writes nothing. An entity already stale at this version stays
                 // stale — the refetch is still owed, and rewriting the row would only risk
@@ -168,7 +170,10 @@ where
         self.store
             .put(&[(
                 key.as_str().to_string(),
-                EntityState::fresh_at(state.version),
+                EntityState {
+                    stale: false,
+                    ..state
+                },
             )])
             .await
     }
@@ -191,7 +196,10 @@ where
             let state = self.store.state(key.as_str()).await?;
             updates.push((
                 key.as_str().to_string(),
-                EntityState::stale_at(state.version),
+                EntityState {
+                    stale: true,
+                    ..state
+                },
             ));
         }
         if !updates.is_empty() {

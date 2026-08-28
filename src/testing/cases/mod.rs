@@ -23,6 +23,7 @@ mod invalidation;
 mod liveness;
 mod ordering;
 mod pass_control;
+mod pull_conflict;
 mod scope_isolation;
 mod status;
 mod transport;
@@ -35,6 +36,7 @@ pub use invalidation::*;
 pub use liveness::*;
 pub use ordering::*;
 pub use pass_control::*;
+pub use pull_conflict::*;
 pub use scope_isolation::*;
 pub use status::*;
 pub use transport::*;
@@ -46,7 +48,8 @@ pub use transport::*;
 /// be churn without a reader to serve.
 mod prelude {
     pub(super) use crate::cache::{
-        CacheVersionStore, EntityState, InvalidationEvent, InvalidationRunner, PendingConflict,
+        CacheVersion, CacheVersionStore, EntityState, InvalidationEvent, InvalidationRunner,
+        PendingConflict,
     };
     pub(super) use crate::entity::SliceRegistry;
     pub(super) use crate::error::Error;

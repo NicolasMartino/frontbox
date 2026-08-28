@@ -6,7 +6,7 @@ Date: 2026-08-27
 Category: Cache Versioning
 Scope: Whether entity cache-version state survives a restart, and what has to survive alongside it for the result to be correct.
 Sources: `raw/initial/2026-08-25T083750Z/sources/persistence/cache.rs`, `wiki/specs/source-frontend-cache-architecture.spec.md`
-Related: `wiki/decisions/003-atomic-outcome-application.decision.md`, `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/decisions/007-generic-entity-key-registry.decision.md`, `wiki/plans/d2-cache-invalidation.plan.md`, `wiki/roadmaps/extraction.roadmap.md`
+Related: `wiki/decisions/021-cache-version-identity.decision.md`, `wiki/decisions/023-read-model-boundary.decision.md`, `wiki/decisions/003-atomic-outcome-application.decision.md`, `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/decisions/007-generic-entity-key-registry.decision.md`, `wiki/plans/d2-cache-invalidation.plan.md`, `wiki/roadmaps/extraction.roadmap.md`
 
 ## Decision
 
@@ -93,6 +93,17 @@ covers.
   refetch completed, and it is what stops the client refetching the same entity on every launch.
 - **This resolves the open item** *"Decide whether cache version state is persisted by default"*
   (`wiki/index.md`, Open Work).
+
+## Amended 2026-08-28 By Decision 021
+
+This page says "version" throughout and D2 built it as a `u64` compared by magnitude. Decision 021
+makes it an **opaque identity compared by equality only**, after RepForge asked (§10 Q4) whether
+this decision assumed ordering. It did.
+
+Nothing in this page's actual holding changes: `(version, stale)` remains one atomically written
+unit, half-persistence remains prohibited, and the argument for durability is untouched — an opaque
+identity persisted without its staleness flag fails in exactly the way described above. What changes
+is the type of one field and the fate of `VersionUpdate::NeedsReset`, which decision 021 carries.
 
 ## Revisit If
 

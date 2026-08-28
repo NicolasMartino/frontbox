@@ -230,7 +230,10 @@ An earlier version of this note claimed uppercase hex alone would invert the ord
 and the unit tests in `src/id.rs` demonstrate what actually inverts it. Corrected 2026-08-26.
 
 If real causal ordering is required, the answer is a monotonic sequence number assigned at enqueue.
-That remains open. It was originally deferred to durable backends in D5 because it adds a column.
+~~That remains open.~~ **Settled 2026-08-27 by decision 016**, which also found that the paragraph
+below understates the problem: the batch is built from `pending_batch` order (`runner.rs:263-264`),
+so a mis-sorted queue is a mis-*ordered* batch and the hazard is not confined to a hypothetical
+single-mutation drain. The rest of this note is the D1-state record. It was originally deferred to durable backends in D5 because it adds a column.
 D0a raises its priority, but on narrower evidence than the first draft claimed: Replicache is the
 only surveyed system that documents per-client causal operation order, where a mutation id
 "describe[s] a causal order to mutations from this client, and that order is respected by the

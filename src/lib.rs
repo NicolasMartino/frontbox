@@ -132,8 +132,8 @@ pub mod transport;
 pub mod testing;
 
 pub use cache::{
-    CacheVersionStore, EntityState, InvalidationEvent, InvalidationReport, InvalidationRunner,
-    PendingConflict, StaleEntity, VersionUpdate,
+    CacheVersion, CacheVersionStore, EntityState, InvalidationEvent, InvalidationReport,
+    InvalidationRunner, PendingConflict, StaleEntity, VersionUpdate,
 };
 pub use clock::Clock;
 #[cfg(not(target_arch = "wasm32"))]
