@@ -1,11 +1,11 @@
 # Retention Is Bounded, And The Bound Dead-Letters
 
 Document Class: Decision
-Status: Accepted 2026-08-27; implementation not authorized
+Status: Accepted 2026-08-27; implemented 2026-08-29
 Date: 2026-08-27
 Category: Sync Semantics
 Scope: What stops a record that is retained on every pass from being retained forever, and what happens at the bound.
-Sources: `src/runner.rs`, `src/store.rs`, `src/record.rs`, `wiki/references/prior-art-survey.reference.md`, `wiki/references/repforge-single-flight-proposal.reference.md`
+Sources: `src/runner/mod.rs`, `src/store.rs`, `src/record/mod.rs`, `wiki/references/prior-art-survey.reference.md`, `wiki/references/repforge-single-flight-proposal.reference.md`
 Related: `wiki/decisions/020-observability-surface.decision.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/012-unknown-mutation-status.decision.md`, `wiki/decisions/016-monotonic-enqueue-sequence.decision.md`, `wiki/decisions/018-single-flight-drain-mode.decision.md`, `wiki/decisions/004-transport-auth-and-offline.decision.md`, `wiki/proposals/single-flight-drain.proposal.md`
 
 ## Decision
@@ -21,7 +21,8 @@ forever.
   attempted-but-failed transport both leave the count alone, but not for the same reason, and the
   difference is worth stating precisely. Offline means the record was never sent. A transport
   failure means a request *was* attempted — decision 004 defines `Error::Transport` as exactly that,
-  and the runner's own comment says "a request was attempted and failed" (`src/runner.rs:275`) — so
+  and the transport trait's own words are "a request was attempted and failed"
+  (`src/transport.rs:24`) — so
   the server may well have received and evaluated it, and only the response was lost. What the two
   share is that neither produced a verdict this client can read. The count measures verdicts
   received, not requests made, which is why both leave it alone. A resend is safe in either case
@@ -111,9 +112,12 @@ mistake the type system saw first.
 ## Consequences
 
 - **`OutboxRecord` gains `attempts`**, additive under decision 008, written by the store during
-  `apply_outcomes` rather than by the caller. `DeadLetterRecord` carries it across the transition,
-  since without it a dead letter with no `RemoteRejection` is indistinguishable from a refusal the
-  server declined to explain.
+  `apply_outcomes` rather than by the caller. `DeadLetterRecord` carries it across the transition.
+  ~~Without it a dead letter with no `RemoteRejection` is indistinguishable from a refusal the
+  server declined to explain.~~ **Superseded 2026-08-30 by decision 027**: the `Some`/`None`
+  encoding could not express a third way of parking a record, which `apply_outcomes` being public
+  always permitted. `DeadLetterReason` states it outright, and `attempts` stops being a
+  discriminator it was never built to be.
 - **`apply_outcomes` gains a responsibility**, not a signature: a `Retain` outcome now increments,
   which makes `Retain` a write rather than a no-op. This is why the runner already emits `Retain`
   outcomes for records it was ruled on instead of relying on silence — decision 003's atomicity
@@ -125,8 +129,9 @@ mistake the type system saw first.
   drains the record resets nothing because the record is gone. The third is worth asserting because
   it is where a partial implementation goes wrong.
 - **`is_stalled()` stops being the only signal** and becomes the early one. A caller currently
-  learns a queue is wedged and can do nothing about it; after this it learns, and the queue also
-  resolves itself.
+  learns a queue is wedged and can do nothing about it; after this it learns, and a queue wedged by
+  *verdicts* resolves itself. One stalled by an absence of verdicts does not — see
+  `## The Bound's Liveness Guarantee Is Conditional`.
 - **This closes the open item** *"Decide whether retained work needs aging, attempt tracking, or
   last-error metadata"* (`wiki/index.md`, Open Work), which decision 012 had already escalated. Of
   the three, attempt tracking is adopted and aging is rejected above. Last-error metadata is not
@@ -138,6 +143,67 @@ mistake the type system saw first.
 - **Decision 005's "Retention is unbounded" consequence is superseded**, and its statement that
   "attempt counters, aging, and skip-past policies remain deliberately out of D1" was a D1 scoping
   note whose promised revisit this is. Skip-past is now rejected on the merits rather than deferred.
+
+## Implementation Outcome
+
+**Built 2026-08-29.** Three things the decision left implicit had to be settled to build it.
+
+**The runner now emits `Retain` for every sent record still queued, which it deliberately did not
+before.** The old comment said records the server did not rule on "get no outcome at all", and that
+was right while `Retain` was a no-op. Once `Retain` means *increment*, silence has to produce one or
+the count never advances for an omitted verdict — and a server that permanently omits one verdict
+would then freeze a single-flight queue forever, which is the failure this decision exists to
+prevent. Silence is still not a verdict: the disposition changes no state and invents no refusal.
+Conformance cases 32 and 33 pass unmodified, which is the check that this changed what the *store*
+receives without changing what the *report* says.
+
+**The bound fires at `attempts >= bound`, not at `attempts + 1 >= bound`.** The record is terminated
+on the pass *after* its count reaches the bound. That costs one round trip and buys an honest
+number: the count on the dead letter is exactly how many attempts were made, with no off-by-one to
+explain to whoever reads it later.
+
+**The runner has to guarantee distinct ids itself.** The verdict loop got that for free from
+`repeated`; the new retain loop does not, so it deduplicates. A store holding two rows under one id
+is a degenerate state the runner does not create, but emitting the id twice would turn it into a
+protocol error blamed on the server.
+
+`with_retention_bound` clamps zero to one, mirroring `with_batch_limit`. Cases 47 and 48 cover the
+bound and the two passes that must not increment.
+
+## The Bound's Liveness Guarantee Is Conditional, 2026-08-30
+
+RepForge read this page closely and found that its liveness claim is stated more broadly than it
+holds. They are right, and the wording above is corrected here rather than quietly.
+
+**`attempts` counts verdicts received.** The offline path and the transport-failure path both
+decline to increment, deliberately and for the reasons this page gives. So a head that receives *no*
+verdicts never advances its count, and the bound never fires. A gateway returning `502` to a plainly
+connected device — which a conforming transport surfaces as `Error::Transport`, since no service
+authored a verdict — stalls a single-flight queue for as long as the outage lasts, and this
+decision's bound does nothing about it.
+
+**Two corrections and one defence.**
+
+The claim that 016 "removes the cheap liveness mechanism and 017 supplies the only remaining one" is
+too broad. It supplies the only remaining one **for wedging by unusable verdicts** — a server that
+keeps answering `Pending`, or a status this build has no word for. That is the failure it was
+written against and it bounds it completely.
+
+The consequence claiming the queue "also resolves itself" carries the same overstatement, and for
+the same reason.
+
+**What is not wrong is the behaviour.** Incrementing on a pass that produced no verdict is exactly
+what this page refuses for offline work, and for the identical reason: dead-lettering a record the
+server never evaluated discards valid work for a condition that is about to stop being true.
+An outage is not a stuck record, and terminating writes because a gateway is down would be the worse
+failure. **The two are different problems wanting different answers**, and only one of them is this
+decision's.
+
+**Nor is the condition silent.** `sync_once` returns `Err(Error::Transport)` on every such pass — not
+a `SyncReport` at all, so the caller does not even have to inspect `is_stalled()`. What a caller
+does with a transport error that never clears is an application policy: RepForge runs a wall-clock
+watchdog beside the bound, which is a reasonable answer and is theirs rather than core's, because
+core has no clock (decision 011) and cannot measure elapsed time to act on.
 
 ## Revisit If
 

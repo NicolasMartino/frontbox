@@ -1,0 +1,53 @@
+[package]
+name = "frontbox-dioxus"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Dioxus bindings for the frontbox offline-first outbox and cache"
+repository = "https://github.com/nicolasmartino/frontbox"
+license = "MIT OR Apache-2.0"
+keywords = ["dioxus", "offline-first", "outbox", "sync", "wasm"]
+categories = ["caching", "wasm"]
+publish = false
+
+[dependencies]
+frontbox = { path = "../.." }
+# The three crates the `dioxus` facade re-exports, named individually: this is a hook library, not
+# a component library, so it needs neither RSX nor a renderer *in its base set*. The `native`
+# feature below is the one exception and it is default-off; see the note on it. Cargo unifies these
+# with whatever the application's `dioxus` dependency resolves to.
+#
+# Unlike core, this crate has a 0.x crate in its public surface. See
+# `wiki/compatibility/dioxus-adapter.compat.md`.
+dioxus-core = "0.7"
+dioxus-hooks = "0.7"
+dioxus-signals = "0.7"
+
+# The `web` feature only. Default off, so a Dioxus *desktop* build — a supported target of the
+# framework this crate is named after — takes none of them, and the feature-less gates in
+# `scripts/verify.sh` are what prove that.
+js-sys = { version = "0.3", optional = true }
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3", optional = true, features = ["Window", "EventTarget", "PageTransitionEvent"] }
+
+# The `native` feature only, and the one dependency in this crate that is a renderer.
+#
+# **This is the expensive one and it is worth naming the price:** `dioxus-desktop` brings wry, tao
+# and a webview. It is here because a desktop window's focus and a phone's suspend arrive on tao's
+# event stream and nowhere else — there is no lighter crate that carries them, and depending on
+# `tao` directly would mean guessing the version `dioxus-desktop` resolved to and registering a
+# second handler beside the one it already runs.
+#
+# Default off, like `web`. `scripts/verify.sh` builds this crate with *neither* feature, which is
+# what proves a browser build never links a webview.
+dioxus-desktop = { version = "0.7", optional = true }
+
+[features]
+# What a browser build needs and a desktop build must not have: a clock over `Date.now()`, and a
+# `pageshow` listener that ends a wait a back/forward cache restore has made meaningless.
+web = ["dep:js-sys", "dep:wasm-bindgen", "dep:web-sys"]
+# What a desktop window and a phone need and a browser must not have: the focus and lifecycle
+# events that say whether the application is in front. Named `native` rather than `desktop` because
+# `dioxus` aliases `mobile` to the same crate, so one feature serves macOS, iOS and Android — and a
+# feature an iPhone build has to switch on should not be called `desktop`.
+native = ["dep:dioxus-desktop"]

@@ -26,7 +26,16 @@ pub(crate) const MAX_MILLIS: i64 = 253_402_300_799_999;
 /// expanded form — `+10000-01-01T00:00:00Z`, with a sign no RFC 3339 parser is obliged to accept —
 /// which is a payload the server would refuse. Refusing to build it here turns a remote rejection
 /// into a local quarantine, where the record is still readable and still recoverable (decision 006).
-pub(crate) fn is_representable(millis: i64) -> bool {
+///
+/// # Why this is public
+///
+/// It is part of the storage contract, not an implementation detail. A durable backend has to
+/// decide whether a stored row is decodable, and this bound is one of the three things that make a
+/// row corrupt. Leaving it `pub(crate)` meant an out-of-tree backend had to *reimplement* the
+/// range — and two implementations of one rule is exactly the divergence the conformance suite
+/// exists to prevent. Found while building `frontbox-sqlite`, which is the first backend outside
+/// this crate and therefore the first thing in a position to notice.
+pub fn is_representable(millis: i64) -> bool {
     (MIN_MILLIS..=MAX_MILLIS).contains(&millis)
 }
 

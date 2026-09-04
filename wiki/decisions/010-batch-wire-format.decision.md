@@ -5,7 +5,7 @@ Status: Accepted; amended 2026-08-27 by decision 011; premise questioned 2026-08
 Date: 2026-08-26
 Category: Public API Shape
 Scope: What `MutationBatchRequest` and `MutationBatchResponse` serialize to, and which serialization crates that pins into the public compatibility surface.
-Sources: `raw/initial/2026-08-25T083750Z/sources/frontend/dto.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/types.rs`, `src/record.rs`, `src/protocol.rs`
+Sources: `raw/initial/2026-08-25T083750Z/sources/frontend/dto.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/types.rs`, `src/record/mod.rs`, `src/protocol.rs`
 Related: `wiki/decisions/011-owned-rfc3339-rendering.decision.md`, `wiki/decisions/019-verdict-synthesis.decision.md`, `wiki/proposals/single-flight-drain.proposal.md`, `wiki/decisions/012-unknown-mutation-status.decision.md`, `wiki/compatibility/public-dependencies.compat.md`, `wiki/plans/d1-core-cache-runtime.plan.md`, `wiki/decisions/002-error-model.decision.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/proposals/extraction-boundary.proposal.md`
 
 ## Premise Note

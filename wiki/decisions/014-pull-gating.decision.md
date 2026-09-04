@@ -92,7 +92,7 @@ bug.
   with unrelated pending work sees a conflict that would not actually have clobbered anything. That
   is a false positive in the conservative direction, and the caller can refetch anyway.
 - **`OperationMeta` is not extended.** It is `{ name, version }` and carries no entity key
-  (`src/record.rs`). A caller wanting per-entity attribution can key off `path`, `method`, or its
+  (`src/record/mod.rs`). A caller wanting per-entity attribution can key off `path`, `method`, or its
   own `op.name` inside the classifier — core reads none of them.
 - **The classifier runs over pending records, so it must be cheap**, and the D2 plan needs to say
   what happens when it panics or is inconsistent between calls.
@@ -139,3 +139,18 @@ Read models move into core, at which point core would perform the pull and could
 meaningfully — the reasoning above turns on core not owning the operation. Or if D4's migration
 trial shows applications consistently writing the same gate by hand, which would be evidence the
 default belongs one level down.
+
+## The Holding Stands; One Sentence Of The Reasoning Does Not
+
+**Added 2026-08-31.** The decision is unchanged: core reports that a refetch would discard unsent
+local work, and does not gate it.
+
+The *stated reason* has moved underneath it. This page argues from **"core does not gate refetches,
+because core does not perform them"**, and decision 032 gave core the row store — so core now holds
+the rows a refetch would overwrite, and `merge_rows` already refuses to overwrite a row with queued
+work. That is not gating a pull, but it is closer to it than "core does not perform them" allows,
+and the sentence should not be quoted as settled while it is being re-examined.
+
+Decision 038 names this as an open thread and `wiki/proposals/invalidation-delivery.proposal.md`
+carries the argument. What would actually reopen the holding is a caller that wants the *decision*
+made for it rather than reported to it; nothing has asked for that.

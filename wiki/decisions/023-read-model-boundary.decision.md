@@ -1,7 +1,7 @@
 # frontbox Tracks What Is Stale, Not What The Data Is
 
 Document Class: Decision
-Status: Accepted 2026-08-28; implementation not authorized
+Status: Accepted 2026-08-28; superseded in part by decision 032 on 2026-08-30 — see the section at the end
 Date: 2026-08-28
 Category: Cache Versioning
 Scope: Whether frontbox stores read-model rows, at what granularity staleness is tracked, and who owns the verification pass that clears it.
@@ -94,3 +94,19 @@ wrong fails silently. Not holding the rows means frontbox cannot be wrong about 
 D4 shows applications routinely reimplementing the same blob store above frontbox, with the same
 bugs. That would be evidence the boundary is drawn in the wrong place — though the remedy would be
 an *example* backend rather than core scope, which is what D5's exclusion already leaves room for.
+
+## Superseded In Part (2026-08-30)
+
+**The clause above fired, and earlier than it expected** — not from D4 evidence of repeated
+reimplementation, but from the *first* implementation being planned: the D5 plan's Track D had
+`todo-core` building its own durable store beside frontbox's, register entry 19 left the hydration
+merge as unaided application homework, and `row_id_of` was re-deriving by parsing what the
+application had known at enqueue. Decision 032 supersedes **one sentence** — "frontbox does not
+store read-model rows" — and the unbounded-marker consequence that followed from it.
+
+Everything else here stands and 032 says so explicitly: markers are real and row-addressable, the
+application owns meaning, serialization, and queries, frontbox takes no position on canonical
+bytes, and decision 014's pull boundary is untouched. The remedy also landed one step beyond what
+the clause predicted: not an example backend but an opaque row store in core's contract — because
+the merge rule, which is the part applications get wrong, only becomes enforceable when the rows
+and the queue share a roof.

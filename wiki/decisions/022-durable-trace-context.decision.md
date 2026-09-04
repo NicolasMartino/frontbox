@@ -1,11 +1,11 @@
 # Trace Context Is Durable, Caller-Supplied, And Stamped At Enqueue
 
 Document Class: Decision
-Status: Accepted 2026-08-28; implementation not authorized
+Status: Accepted 2026-08-28; implemented 2026-08-29
 Date: 2026-08-28
 Category: Public API Shape
 Scope: Whether the outbox record carries W3C trace context, who generates it, and why a span cannot do the job instead.
-Sources: `src/record.rs`, `Cargo.toml`, `scripts/verify.sh`, `wiki/references/repforge-single-flight-proposal.reference.md`
+Sources: `src/record/mod.rs`, `Cargo.toml`, `scripts/verify.sh`, `wiki/references/repforge-single-flight-proposal.reference.md`
 Related: `wiki/decisions/020-observability-surface.decision.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/decisions/016-monotonic-enqueue-sequence.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/proposals/repforge-read-model-convergence.proposal.md`
 
 ## Decision
@@ -85,6 +85,21 @@ the one moment anybody goes looking.
   `(traceparent, attempts)` distinguishes the tries; without it they are indistinguishable, which is
   a third independent argument for 017 being implemented first.
 - **Nothing in the runtime dependency graph changes.** The field is a string to core.
+
+## Implementation Outcome
+
+**Built 2026-08-29**, and building it exposed a requirement this decision missed.
+
+**The field is `#[serde(skip)]` on `MutationIntent`.** The decision said trace context is sent "as a
+header", and `MutationIntent` *is* the wire body — so serializing the field would have put the
+context in the payload, silently changing the shape decision 010 fixed and breaking the passthrough
+compatibility that decision exists to preserve. Skipping it means the value rides the type without
+riding the wire: the transport reads it off the intent and sets the header. Case 27 still sees
+exactly five keys.
+
+Case 51 asserts all three properties together, because separately they prove little: the context is
+durable across the store, absent from the serialized payload, and carried onto the dead letter — and
+a caller that supplies nothing gets nothing invented for it.
 
 ## Revisit If
 

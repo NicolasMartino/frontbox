@@ -1,0 +1,56 @@
+[package]
+name = "todo-app"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+description = "The Dioxus half of the D4a offline todo trial, on web, desktop and mobile"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+todo-core = { path = "../todo-core" }
+frontbox = { path = "../.." }
+frontbox-dioxus = { path = "../../crates/frontbox-dioxus" }
+# No renderer in the base feature set. Which one arrives is the whole of what a platform feature
+# below decides, and keeping it out of here is what makes `--features desktop` a real swap rather
+# than an addition on top of a browser build that is already compiled in.
+dioxus = { version = "0.7.10", default-features = false, features = ["macro", "html", "signals", "hooks", "launch"] }
+
+# **The timer, chosen by target rather than by feature.** `Sleeper` takes whichever the application
+# already has, which is the seam that lets one UI crate serve three platforms — see
+# `frontbox_dioxus::Sleeper`. `gloo-timers` needs a browser and `tokio::time` needs a reactor, so
+# neither can be a plain dependency of both.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gloo-timers = { version = "0.3", features = ["futures"] }
+# D4d's focus gating: a `visibilitychange` listener that wakes the invalidation poll. The adapter
+# ships `use_bfcache_wake` for `pageshow` and deliberately not this one — a page becoming visible is
+# an application's policy, not a framework's, and `Wake` is public precisely so an application can
+# supply its own event.
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["console", "Document", "EventTarget", "Window"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tokio = { version = "1", features = ["time"] }
+# Where a SQLite file may be written. A browser has no such question — the database is named, not
+# placed — so this is native-only by construction.
+dirs = "6"
+
+# Android alone cannot answer "where may I write" from the environment: there is no `HOME`, and the
+# per-application data directory is only reachable by asking the running `Activity` for it. These
+# two are that call — `ndk-context` hands over the JVM and activity pointers the runtime installed,
+# and `jni` makes the `getFilesDir()` call with them.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"
+
+[features]
+# `web` by default, so every existing wasm gate and `dx serve` keeps working unchanged. The other
+# two are selected with `--no-default-features --features <platform>`, which `dx --platform` does
+# on its own.
+default = ["web"]
+web = ["dioxus/web", "frontbox-dioxus/web"]
+# Both forward to the adapter's `native` feature, which is where the focus and lifecycle events
+# live. `dioxus` aliases `mobile` to `dioxus_desktop`, so these two enable the same adapter code —
+# which is why that feature is called `native` and not `desktop`.
+desktop = ["dioxus/desktop", "frontbox-dioxus/native"]
+mobile = ["dioxus/mobile", "frontbox-dioxus/native"]

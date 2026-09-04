@@ -3,19 +3,6 @@
 use super::prelude::*;
 
 /// Open an outbox and a version store on one scope.
-async fn open_both<F: VersionStoreFactory>(
-    factory: &F,
-) -> Result<(F::Store, F::Versions, ScopeKey), Error> {
-    let key = scope("user:alice@tenant:acme@schema:1");
-    let outbox = factory.open(key.clone()).await?;
-    let versions = factory.open_versions(key.clone()).await?;
-    Ok((outbox, versions, key))
-}
-
-fn cache<V: CacheVersionStore>(store: V) -> InvalidationRunner<V, SliceRegistry<&'static str>> {
-    InvalidationRunner::new(store, registry())
-}
-
 /// An event naming an entity the registry does not model changes nothing, and says so.
 ///
 /// The source gets the disposition right and the signal wrong: it logs and drops. A log line is not
@@ -289,6 +276,69 @@ pub async fn case_44_a_zero_identity_is_distinct_from_no_identity<F: VersionStor
     assert!(
         !runner.store().state("exercises").await?.stale,
         "a repeat of a known identity must not re-dirty the entity"
+    );
+    Ok(())
+}
+
+/// **Stale with no version survives a reopen, and is not silently rewritten to fresh.**
+///
+/// The fourth combination of `EntityState`'s two fields, and the one no constructor covered until
+/// D5's second backend needed to rebuild it from columns. `unknown` is `(None, false)`, `stale_at`
+/// is `(Some, true)`, `fresh_at` is `(Some, false)`; `(None, true)` had nowhere to come from
+/// outside this crate, so a durable backend reading a null version would have had to answer
+/// `unknown()` and drop the staleness on the floor.
+///
+/// **It is reached by the most ordinary path there is.**
+/// [`InvalidationRunner::mark_all_stale`](crate::cache::InvalidationRunner::mark_all_stale) flags
+/// every registered entity, and for one no invalidation has ever named the read-modify-write is
+/// `(None, false)` → `(None, true)`. A client that has just installed and hit an error is exactly
+/// where that hammer gets used, so the state is common rather than exotic.
+///
+/// **What dropping it costs:** the entity reads back not-stale, [`stale`] omits it, and the refetch
+/// the recovery was asking for never happens — quietly, and only after a restart, so it would
+/// present as "the recovery button works until you close the app".
+///
+/// The reopen is the point. Held in memory the field is just a `bool`; the failure only exists in
+/// the round trip through storage, which is why this is a conformance case rather than a unit test.
+///
+/// [`stale`]: crate::cache::InvalidationRunner::stale
+pub async fn case_67_stale_with_no_version_survives_a_reopen<F: VersionStoreFactory>(
+    factory: &F,
+) -> Result<(), Error> {
+    let key = scope("user:erin@tenant:acme@schema:1");
+    let first = factory.open_versions(key.clone()).await?;
+
+    // Nothing has ever been heard about any of these — no `apply` ran first, deliberately.
+    let runner = InvalidationRunner::new(first, registry());
+    runner.mark_all_stale().await?;
+    let before = runner.store().state("exercises").await?;
+    assert_eq!(
+        before,
+        EntityState::from_parts(None, true),
+        "stale, and with no version, because none was ever heard"
+    );
+
+    let reopened = factory.open_versions(key).await?;
+    let after = reopened.state("exercises").await?;
+    assert_eq!(
+        after.version, None,
+        "a null version must not come back as some sentinel"
+    );
+    assert!(
+        after.stale,
+        "and the staleness must survive — a backend that answers `unknown()` for a null version \
+         silently cancels the refetch `mark_all_stale` was asking for"
+    );
+
+    // And it must be enumerable, not merely readable by name. `stale()` walks `all_states`, so a
+    // backend that filtered null versions out of the enumeration would pass the assertion above
+    // and still never refetch anything.
+    let states = reopened.all_states().await?;
+    assert!(
+        states
+            .iter()
+            .any(|(entity, state)| entity == "exercises" && state.stale),
+        "the versionless-but-stale entity has to appear in an enumeration too"
     );
     Ok(())
 }

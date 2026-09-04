@@ -26,7 +26,8 @@ use crate::clock::Clock;
 use crate::error::Error;
 use crate::id::MutationId;
 use crate::record::{
-    DeadLetterRecord, MutationIntent, OperationMeta, OutboxRecord, QuarantinedRecord,
+    DeadLetterRecord, MutationIntent, OperationMeta, OutboxRecord, QuarantinedRecord, RowRef,
+    StoredRow,
 };
 use crate::scope::ScopeKey;
 
@@ -35,25 +36,25 @@ pub use crate::clock::ManualClock;
 /// An operation that [`InMemoryBackend::fail_next`] can be told to fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StoreOp {
-    /// [`OutboxStore::enqueue`]
+    /// [`OutboxStore::enqueue`](crate::store::OutboxStore::enqueue)
     Enqueue,
-    /// [`OutboxStore::pending_batch`]
+    /// [`OutboxStore::pending_batch`](crate::store::OutboxStore::pending_batch)
     PendingBatch,
-    /// [`OutboxStore::pending_count`]
+    /// [`OutboxStore::pending_count`](crate::store::OutboxStore::pending_count)
     PendingCount,
-    /// [`OutboxStore::sweep_corrupt`]
+    /// [`OutboxStore::sweep_corrupt`](crate::store::OutboxStore::sweep_corrupt)
     SweepCorrupt,
-    /// [`OutboxStore::apply_outcomes`]
+    /// [`OutboxStore::apply_outcomes`](crate::store::OutboxStore::apply_outcomes)
     ApplyOutcomes,
-    /// [`DeadLetterStore::list`]
+    /// [`DeadLetterStore::list`](crate::store::DeadLetterStore::list)
     DeadLetterList,
-    /// [`DeadLetterStore::count`]
+    /// [`DeadLetterStore::count`](crate::store::DeadLetterStore::count)
     DeadLetterCount,
-    /// [`DeadLetterStore::purge_older_than`]
+    /// [`DeadLetterStore::purge_older_than`](crate::store::DeadLetterStore::purge_older_than)
     DeadLetterPurge,
-    /// [`QuarantineStore::list`]
+    /// [`QuarantineStore::list`](crate::store::QuarantineStore::list)
     QuarantineList,
-    /// [`QuarantineStore::count`]
+    /// [`QuarantineStore::count`](crate::store::QuarantineStore::count)
     QuarantineCount,
     /// [`CacheVersionStore::state`](crate::cache::CacheVersionStore::state)
     CacheState,
@@ -61,13 +62,25 @@ pub enum StoreOp {
     CacheAllStates,
     /// [`CacheVersionStore::put`](crate::cache::CacheVersionStore::put)
     CachePut,
+    /// [`RowStore::get_row`](crate::store::RowStore::get_row)
+    GetRow,
+    /// [`RowStore::list_rows`](crate::store::RowStore::list_rows)
+    ListRows,
+    /// [`RowStore::put_rows`](crate::store::RowStore::put_rows)
+    PutRows,
+    /// [`RowStore::merge_rows`](crate::store::RowStore::merge_rows)
+    MergeRows,
+    /// [`RowStore::delete_rows`](crate::store::RowStore::delete_rows)
+    DeleteRows,
+    /// [`RowStore::set_stale`](crate::store::RowStore::set_stale)
+    SetStale,
 }
 
 /// One stored outbox row, in the shape a durable backend would keep.
 ///
 /// The identifier and body are held as raw text rather than parsed values, so a row that cannot be
 /// decoded is representable. Without that there would be nothing for
-/// [`OutboxStore::sweep_corrupt`] to find, and the corrupt-record path could not be tested at all.
+/// [`OutboxStore::sweep_corrupt`](crate::store::OutboxStore::sweep_corrupt) to find, and the corrupt-record path could not be tested at all.
 #[derive(Debug, Clone)]
 struct Row {
     raw_mutation_id: String,
@@ -76,14 +89,33 @@ struct Row {
     raw_body: String,
     created_at: i64,
     op: Option<OperationMeta>,
+    traceparent: Option<String>,
+    precondition: Option<String>,
     scope: ScopeKey,
+    seq: u64,
+    attempts: u32,
+    row: Option<RowRef>,
+    last_error: Option<String>,
 }
 
 #[derive(Default)]
 struct State {
     outbox: Vec<Row>,
+    /// The next enqueue sequence, issued globally rather than per scope.
+    ///
+    /// Global monotonicity is per-scope monotonicity for free, because every read is scope
+    /// filtered (decision 009). Never decremented and never reused: a row leaving the outbox does
+    /// not return its number, because reusing it would let a later enqueue sort before an earlier
+    /// one (`wiki/decisions/016-monotonic-enqueue-sequence.decision.md`).
+    next_seq: u64,
     dead_letters: Vec<DeadLetterRecord>,
     quarantine: Vec<QuarantinedRecord>,
+    /// Read-model rows, keyed by scope and the row's own two-part key.
+    ///
+    /// Keyed by `(ScopeKey, RowRef)` rather than nested, so a scope-filtered read is one predicate
+    /// and a durable backend sees the same shape: one table, scope-stamped like every other
+    /// (`wiki/decisions/032-opaque-row-store.decision.md`).
+    rows: HashMap<(ScopeKey, RowRef), StoredRow>,
     /// Cache version state, keyed by scope and the entity's canonical string form.
     ///
     /// Keyed by `EntityKey::as_str` rather than by the key type, so that one backend can serve
@@ -147,7 +179,7 @@ impl InMemoryBackend {
     /// Make the next call to `op` fail with a storage error.
     ///
     /// Consumed by that call. Used to prove that a failing
-    /// [`apply_outcomes`](OutboxStore::apply_outcomes) leaves no partial state.
+    /// [`apply_outcomes`](crate::store::OutboxStore::apply_outcomes) leaves no partial state.
     ///
     /// This backend cannot produce a genuinely torn write — it commits by replacing state in one
     /// assignment — so what the injection demonstrates is that the *contract* holds under a failing
@@ -164,7 +196,7 @@ impl InMemoryBackend {
     /// Write a row directly, bypassing validation.
     ///
     /// A test affordance: durable corruption cannot be produced through
-    /// [`enqueue`](OutboxStore::enqueue), because a [`MutationIntent`] holds a parsed body and a
+    /// [`enqueue`](crate::store::OutboxStore::enqueue), because a [`MutationIntent`] holds a parsed body and a
     /// parsed identifier. Corrupt rows arise from storage — a partial write, a schema change, a
     /// hand-edited database — so a test has to write one directly.
     pub fn insert_raw_row(
@@ -176,14 +208,25 @@ impl InMemoryBackend {
         raw_body: impl Into<String>,
         created_at: i64,
     ) {
-        self.state.borrow_mut().outbox.push(Row {
+        let mut state = self.state.borrow_mut();
+        // A raw row still takes a sequence. Skipping it would let a corrupt row sort ahead of
+        // everything written before it, and quarantine reads the same ordered store.
+        let seq = state.next_seq;
+        state.next_seq += 1;
+        state.outbox.push(Row {
             raw_mutation_id: raw_mutation_id.into(),
             method: method.into(),
             path: path.into(),
             raw_body: raw_body.into(),
             created_at,
             op: None,
+            traceparent: None,
+            precondition: None,
             scope: scope.clone(),
+            seq,
+            attempts: 0,
+            row: None,
+            last_error: None,
         });
     }
 
@@ -210,7 +253,7 @@ impl InMemoryBackend {
 
 /// A handle on one scope's records.
 ///
-/// Implements [`OutboxStore`], [`DeadLetterStore`], and [`QuarantineStore`]. Because the latter two
+/// Implements [`OutboxStore`](crate::store::OutboxStore), [`DeadLetterStore`](crate::store::DeadLetterStore), and [`QuarantineStore`](crate::store::QuarantineStore). Because the latter two
 /// both have `list` and `count`, call them through the trait when the receiver is concrete:
 /// `DeadLetterStore::count(&store).await`.
 #[derive(Clone, Debug)]
@@ -254,7 +297,19 @@ fn decode(row: &Row) -> Result<OutboxRecord, String> {
     if let Some(op) = row.op.clone() {
         intent = intent.with_op(op);
     }
-    Ok(OutboxRecord::stamp(intent, row.scope.clone()))
+    if let Some(traceparent) = row.traceparent.clone() {
+        intent = intent.with_traceparent(traceparent);
+    }
+    if let Some(precondition) = row.precondition.clone() {
+        intent = intent.with_precondition(precondition);
+    }
+    if let Some(bound) = row.row.clone() {
+        intent = intent.with_row(bound);
+    }
+    let mut record = OutboxRecord::stamp(intent, row.scope.clone(), row.seq);
+    record.attempts = row.attempts;
+    record.last_error = row.last_error.clone();
+    Ok(record)
 }
 
 fn quarantine_from(row: &Row, reason: String, quarantined_at: i64) -> QuarantinedRecord {
@@ -276,6 +331,7 @@ fn quarantine_from(row: &Row, reason: String, quarantined_at: i64) -> Quarantine
 mod factory;
 mod outbox;
 mod reads;
+mod rows;
 mod versions;
 
 pub use versions::InMemoryVersionStore;

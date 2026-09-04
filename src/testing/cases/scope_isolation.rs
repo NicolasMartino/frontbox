@@ -1,4 +1,5 @@
-//! Cases 22, 23, 29: required scope keys, and no normalization of them.
+//! Cases 22, 23, 29 and 49: required scope keys, no normalization of them, and no collision under
+//! a backend's own storage naming.
 
 use super::prelude::*;
 
@@ -24,8 +25,13 @@ pub async fn case_22_scopes_cannot_observe_each_other<F: StoreFactory>(
 
     let a = factory.open(alice.clone()).await?;
     a.enqueue(intent(1, 1)).await?;
-    a.apply_outcomes(&[Outcome::new(id(1), Disposition::DeadLetter { error: None })])
-        .await?;
+    a.apply_outcomes(&[Outcome::new(
+        id(1),
+        Disposition::DeadLetter {
+            reason: DeadLetterReason::Caller("test fixture".into()),
+        },
+    )])
+    .await?;
     a.enqueue(intent(2, 2)).await?;
 
     let b = factory.open(bob.clone()).await?;
@@ -84,5 +90,48 @@ pub async fn case_29_scope_keys_are_not_normalized<F: StoreFactory>(
     }
 
     assert_eq!(plain.pending_count().await?, 1);
+    Ok(())
+}
+
+/// Scope keys that collide under naive sanitization stay isolated, in both directions.
+///
+/// **The obligation decision 009 stated and nothing proved.** The source derives a storage name by
+/// character replacement (`persistence/native.rs:65`, `persistence/web.rs:33`), which was safe for
+/// the UUIDs it was written for and is unsafe for a caller-composed key: `tenant/1` and `tenant_1`
+/// both collapse to `tenant_1`, putting two users in one database **silently**, with no symptom
+/// until one of them sees the other's queued writes.
+///
+/// Every other scope key in this suite is clean, so a backend could pass all of them while shipping
+/// exactly that bug. These two differ only in a character a sanitizer would fold
+/// (`wiki/decisions/024-scope-storage-encoding.decision.md`).
+///
+/// It passes trivially on an in-memory backend, whose keys are map keys and need no encoding. That
+/// is expected: the case exists for the durable backends, and it is checked in now so it is
+/// waiting for them rather than written after the first collision.
+pub async fn case_49_collision_prone_scope_keys_are_isolated<F: StoreFactory>(
+    factory: &F,
+) -> Result<(), Error> {
+    let slashed = factory.open(scope("user:a/b@tenant:acme")).await?;
+    let underscored = factory.open(scope("user:a_b@tenant:acme")).await?;
+
+    slashed.enqueue(intent(1, 1)).await?;
+    assert_eq!(
+        underscored.pending_count().await?,
+        0,
+        "slash then underscore"
+    );
+
+    underscored.enqueue(intent(2, 2)).await?;
+    assert_eq!(
+        slashed.pending_count().await?,
+        1,
+        "and the write back must not land in the first store either"
+    );
+    assert_eq!(
+        slashed.pending_batch(10).await?[0].mutation_id,
+        id(1),
+        "each store holds its own record, not the other's"
+    );
+    assert_eq!(underscored.pending_batch(10).await?[0].mutation_id, id(2));
     Ok(())
 }

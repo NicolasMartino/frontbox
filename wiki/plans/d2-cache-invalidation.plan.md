@@ -137,7 +137,7 @@ reporting.
 inventory's "9 listener tests, D2/D3 evidence" line should be read with that split in mind.
 
 **New cases, numbered from 34** — the D1 suite used 1–33. Every case must be added to the single
-shared list in `__frontbox_conformance_suite!` (`src/testing/macros.rs`), which is deliberately the
+shared list in `__frontbox_conformance_suite!` (`src/testing/macros/mod.rs`), which is deliberately the
 only place the list appears so the synchronous and `async` emissions cannot drift.
 
 | # | Case | Proves |
@@ -218,7 +218,7 @@ All `scripts/verify.sh` gates green.
 - **`InvalidationEvent` drops the source's `user_id`.** The source's own comment says it is for
   debugging only and must not be used for access control. Rather than carry a field whose
   documentation is a warning, isolation stays entirely with `ScopeKey`.
-- **`src/cache/runner.rs` reached 466 lines** and was split into a directory — `mod.rs`, `report.rs`,
+- **`src/cache/runner/mod.rs` reached 466 lines** and was split into a directory — `mod.rs`, `report.rs`,
   `conflict.rs` — per the code-shape rule. The conflict half is the natural seam: it is the only
   part that reads the *outbox* rather than the version store.
 

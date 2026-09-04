@@ -1,4 +1,4 @@
-//! Cases 10-12: bounded batches and the total pending order.
+//! Cases 10-12 and 46: bounded batches and the enqueue order.
 
 use super::prelude::*;
 
@@ -26,29 +26,57 @@ pub async fn case_10_pending_batch_respects_limit<F: StoreFactory>(
     Ok(())
 }
 
-/// Distinct timestamps come back oldest first, regardless of insertion order.
-pub async fn case_11_ordering_is_oldest_first<F: StoreFactory>(factory: &F) -> Result<(), Error> {
+/// Records come back in enqueue order, and a client clock that runs backwards does not reorder them.
+///
+/// D2 shipped this as `case_11_ordering_is_oldest_first`, asserting the *timestamp* order — which is
+/// the defect `wiki/decisions/016-monotonic-enqueue-sequence.decision.md` removes. `created_at` is a
+/// client clock reading, and a clock that steps backwards mid-session, or a caller that stamps its
+/// own times, would reorder a queue that was enqueued correctly.
+///
+/// The case keeps its number because descending timestamps are exactly where the old rule and the
+/// new one disagree.
+pub async fn case_11_ordering_is_enqueue_order<F: StoreFactory>(factory: &F) -> Result<(), Error> {
     let (store, _) = open(factory).await?;
     store.enqueue(intent(1, 30)).await?;
     store.enqueue(intent(2, 10)).await?;
     store.enqueue(intent(3, 20)).await?;
 
     let batch = store.pending_batch(10).await?;
-    let timestamps: Vec<_> = batch.iter().map(|r| r.created_at).collect();
-    assert_eq!(timestamps, vec![10, 20, 30]);
+    assert_eq!(
+        batch.iter().map(|r| r.mutation_id).collect::<Vec<_>>(),
+        vec![id(1), id(2), id(3)],
+        "the drain replays what the caller wrote, not what its clock said"
+    );
+    assert_eq!(
+        batch.iter().map(|r| r.created_at).collect::<Vec<_>>(),
+        vec![30, 10, 20],
+        "timestamps are carried, not consulted"
+    );
+
+    // The sequence is strictly increasing and is what the order is read from.
+    let seqs: Vec<_> = batch.iter().map(|r| r.seq).collect();
+    assert!(
+        seqs.windows(2).all(|w| w[0] < w[1]),
+        "enqueue sequence must strictly increase, got {seqs:?}"
+    );
     Ok(())
 }
 
-/// Same-millisecond records order stably by `mutation_id`, and repeated reads agree.
+/// Same-millisecond records come back in enqueue order, and repeated reads agree.
 ///
-/// This asserts determinism, never causality. `created_at` is a client clock reading and
-/// `mutation_id` is random, so the tie-break makes the order total and reproducible across backends
-/// without claiming anything about what actually happened first. Real causal ordering would need a
-/// monotonic sequence assigned at enqueue, which this does not provide.
-pub async fn case_12_same_timestamp_orders_stably_by_id<F: StoreFactory>(
+/// **The case `(created_at, mutation_id)` got wrong.** Three writes in one millisecond — a session,
+/// an exercise in it, a set in that — tie on the timestamp and broke on a random v4 UUID, so the
+/// set could be drained before the session it belongs to. Under batching the whole batch went out
+/// together and the server evaluated it in the same wrong order; under `batch_limit = 1` a wrong
+/// order is a wrong write.
+///
+/// D2 shipped this as `case_12_same_timestamp_orders_stably_by_id`, asserting the UUID tie-break.
+/// It kept its number: same setup, opposite expectation.
+pub async fn case_12_same_timestamp_keeps_enqueue_order<F: StoreFactory>(
     factory: &F,
 ) -> Result<(), Error> {
     let (store, _) = open(factory).await?;
+    // Enqueued deliberately against UUID order, so sorting by id would be visible.
     store.enqueue(intent(3, 100)).await?;
     store.enqueue(intent(1, 100)).await?;
     store.enqueue(intent(2, 100)).await?;
@@ -59,7 +87,11 @@ pub async fn case_12_same_timestamp_orders_stably_by_id<F: StoreFactory>(
         .iter()
         .map(|r| r.mutation_id)
         .collect();
-    assert_eq!(first, vec![id(1), id(2), id(3)]);
+    assert_eq!(
+        first,
+        vec![id(3), id(1), id(2)],
+        "enqueue order, not UUID order"
+    );
 
     let second: Vec<_> = store
         .pending_batch(10)
@@ -70,6 +102,51 @@ pub async fn case_12_same_timestamp_orders_stably_by_id<F: StoreFactory>(
     assert_eq!(
         first, second,
         "repeated reads must return the same sequence"
+    );
+    Ok(())
+}
+
+/// Enqueue order survives reopening the store.
+///
+/// The property that makes the sequence durable rather than a process-lifetime convenience. A
+/// counter that restarts at zero re-orders the queue: records written after the restart sort ahead
+/// of everything already queued, which is the exact failure the sequence exists to prevent, and it
+/// only appears after a crash.
+pub async fn case_46_enqueue_order_survives_a_reopen<F: StoreFactory>(
+    factory: &F,
+) -> Result<(), Error> {
+    let key = scope("user:erin@tenant:acme@schema:1");
+
+    let first = factory.open(key.clone()).await?;
+    first.enqueue(intent(3, 100)).await?;
+    first.enqueue(intent(1, 100)).await?;
+    let before: Vec<_> = first
+        .pending_batch(10)
+        .await?
+        .iter()
+        .map(|r| r.seq)
+        .collect();
+
+    // Reopening is how a test says "the process died and came back" to a store with no process.
+    let reopened = factory.open(key).await?;
+    reopened.enqueue(intent(2, 100)).await?;
+
+    let batch = reopened.pending_batch(10).await?;
+    assert_eq!(
+        batch.iter().map(|r| r.mutation_id).collect::<Vec<_>>(),
+        vec![id(3), id(1), id(2)],
+        "a record enqueued after the reopen must sort last, not first"
+    );
+
+    let after: Vec<_> = batch.iter().map(|r| r.seq).collect();
+    assert_eq!(
+        after[..2],
+        before[..],
+        "sequences already issued must survive unchanged"
+    );
+    assert!(
+        after[2] > after[1],
+        "the counter must resume above what it issued, got {after:?}"
     );
     Ok(())
 }

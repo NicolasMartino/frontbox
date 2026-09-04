@@ -1,8 +1,8 @@
 # D1 Core Cache Runtime Plan
 
 Document Class: Plan
-Status: Completed
-Date: 2026-08-25
+Status: **Completed 2026-08-26** — built, verified, and promoted; see `## Implementation Outcome`
+Date: 2026-08-25 (planned); built 2026-08-26
 Category: Implementation Preparation
 Scope: Prepare the first extraction slice: a framework-neutral outbox and sync runtime with an in-memory backend and conformance tests.
 Sources: `raw/initial/2026-08-25T083750Z/sources`, `raw/research/2026-08-25-prior-art-survey`, `wiki/specs/source-frontend-cache-architecture.spec.md`, `wiki/references/source-test-inventory.reference.md`, `wiki/references/prior-art-survey.reference.md`
@@ -397,8 +397,8 @@ implements all three storage traits. That would not compile if any trait require
 
 - The user owns Git state. Do not stage, commit, reset, or otherwise write Git state.
 - Do not modify `raw/`; it is immutable provenance.
-- Do not begin implementation before explicit authorization. D1 was authorized 2026-08-26 and D2 on
-  2026-08-27; this still binds D3 onward.
+- Do not begin implementation before explicit authorization. D1 was authorized 2026-08-26, D2 on
+  2026-08-27, and D3 and D4a on 2026-08-29; this still binds D4b onward.
 - Treat `08-offline-sync.spec.md` as normative when it conflicts with `mutations.rs`.
 - Keep all source divergences visible in the docs until implementation tests prove the new
   behavior. Discharged for D1: every divergence now has a named conformance case, tabulated in

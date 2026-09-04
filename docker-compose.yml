@@ -1,0 +1,63 @@
+name: frontbox-todo
+
+services:
+  # The second domain server, first because the todo server's reference check calls it.
+  #
+  # That dependency is a fixture rather than an architecture recommendation — see
+  # `examples/todo-server/src/users.rs` — but it is a real startup ordering constraint while it
+  # exists, so `depends_on` states it rather than leaving it to luck.
+  user-server:
+    build:
+      context: .
+      dockerfile: examples/user-server/Dockerfile
+    environment:
+      USER_SERVER_ADDR: 0.0.0.0:3001
+      # The delete cascade calls back into the todo service. Container-internal, like the reverse
+      # direction below.
+      #
+      # **There is deliberately no `depends_on: todo-server` here**, and it is not an oversight:
+      # `todo-server` already depends on this service, so the reverse would be a cycle Compose
+      # refuses to start. Neither service calls the other at *startup* — only per request — so the
+      # address is enough. The cycle itself is a real smell and
+      # `examples/user-server/src/todos.rs` says so at length.
+      TODO_SERVER_URL: http://todo-server:3000
+    ports:
+      - "${USER_SERVER_PORT:-3001}:3001"
+
+  todo-server:
+    build:
+      context: .
+      dockerfile: examples/todo-server/Dockerfile
+    environment:
+      TODO_SERVER_ADDR: 0.0.0.0:3000
+      # Container-internal, not the published port: this is one service calling another inside the
+      # compose network, and the host mapping is for the browser.
+      USER_SERVER_URL: http://user-server:3001
+    ports:
+      - "${TODO_SERVER_PORT:-3000}:3000"
+    depends_on:
+      user-server:
+        condition: service_healthy
+
+  todo-app:
+    build:
+      context: .
+      dockerfile: examples/todo-app/Dockerfile
+      args:
+        # **Derived from the published ports, not repeated.** The browser reaches both services
+        # through the host, so these must be the *published* ports — and they are baked into the
+        # wasm bundle at build time, because `platform::BASE_URL` reads them through `option_env!`
+        # and a compiled bundle has no environment to consult at run time.
+        #
+        # Interpolating the port variables is what keeps them honest. Written as literals, moving a
+        # service to a free port — `USER_SERVER_PORT=3101`, because something else already had 3001
+        # — produced a stack where every container was healthy and the application silently talked
+        # to the wrong port. There is no error for that: the browser's fetch fails the way being
+        # offline does, which is the one condition this application is designed to treat as normal.
+        TODO_SERVER_URL: ${TODO_SERVER_URL:-http://127.0.0.1:${TODO_SERVER_PORT:-3000}}
+        USER_SERVER_URL: ${USER_SERVER_URL:-http://127.0.0.1:${USER_SERVER_PORT:-3001}}
+    ports:
+      - "${TODO_APP_PORT:-8081}:80"
+    depends_on:
+      todo-server:
+        condition: service_healthy

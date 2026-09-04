@@ -1,11 +1,11 @@
 # Observability Is A Returned Value First; Emission Is Additive And Available
 
 Document Class: Decision
-Status: Accepted 2026-08-28; corrected same day — see `## Why Core Emits Nothing Today`
+Status: Accepted 2026-08-28; corrected same day — see `## Why Core Emits Nothing Today`; aggregation boundary built 2026-08-29
 Date: 2026-08-28
 Category: Public API Shape
 Scope: What frontbox tells a caller about its own operation, through what mechanism, and what a cross-library observability convergence can and cannot ask of it.
-Sources: `src/runner.rs`, `src/record.rs`, `Cargo.toml`, `scripts/verify.sh`, `wiki/compatibility/public-dependencies.compat.md`
+Sources: `src/runner/mod.rs`, `src/record/mod.rs`, `Cargo.toml`, `scripts/verify.sh`, `wiki/compatibility/public-dependencies.compat.md`
 Related: `wiki/decisions/022-durable-trace-context.decision.md`, `wiki/decisions/001-single-threaded-core.decision.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/decisions/011-owned-rfc3339-rendering.decision.md`, `wiki/decisions/012-unknown-mutation-status.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/018-single-flight-drain-mode.decision.md`, `wiki/specs/frontbox-runtime.spec.md`
 
 ## Decision
@@ -94,7 +94,11 @@ the vocabulary questions below are open rather than answered.
 ### Cheap, and it should be decided now
 
 **Make the report types serializable.** This is the sharpest finding on this page and it is a
-one-line change with a real consequence. Today:
+one-line change with a real consequence. **Done 2026-08-29**
+(`wiki/decisions/030-serializable-reports.decision.md`): `Serialize` on all five, plus
+`DrainReport` and `DrainEnd`, and deliberately no `Deserialize` — nothing writes a report, so the
+reverse derive would be semver surface with no caller and a way to fabricate a diagnostic. The
+table below records the gap as it stood.
 
 | Type | Derives | Serializable |
 | --- | --- | --- |
@@ -117,8 +121,9 @@ other public type — so it widens an existing commitment rather than making a n
 
 ### Available, but each costs a decision that is still open
 
-- **Attempt history.** Decision 017's durable counter, accepted and unimplemented. `mutation_id`
-  identifies a mutation; it does not identify a *try*. `(mutation_id, attempts)` does.
+- **Attempt history.** Decision 017's durable counter, **built 2026-08-29**. `mutation_id`
+  identifies a mutation; it does not identify a *try*. `(mutation_id, attempts)` does, and it is
+  now on the record and carried onto the dead letter.
 - **Last-error metadata.** Left open by decision 017 and listed in `wiki/index.md` under Open Work.
   Under a convergence requirement it stops being optional: it is the only proposed field that
   survives a restart and explains *why* a record is still queued. Everything else in the report
@@ -161,6 +166,13 @@ should emit — not once per `sync_once`.** Decision 018 already owes D3 that lo
 reasons. This is a second, independent argument for the same thing, which is usually a sign the
 loop is in the right place.
 
+**Built 2026-08-29, and one word of that paragraph was wrong: "not in core".** The loop is
+`SyncRunner::drain` and it ships in core, because this page's own argument is what put it there.
+If `DrainReport` lived in the Dioxus adapter, aggregation would be fixed for Dioxus applications
+and left to every native SQLite consumer to reinvent — which is this section's complaint, narrowed
+rather than answered. What stayed with the adapter is the *cadence*, which needs a wall clock core
+does not have. See `wiki/decisions/028-drain-loop-boundary.decision.md`.
+
 ## Open Questions This Page Cannot Answer
 
 These need RepForge's actual convergence specification, which was not provided:
@@ -183,12 +195,14 @@ These need RepForge's actual convergence specification, which was not provided:
   `tracing-core`, `once_cell` — trips none of it. Verified against the vendored manifests rather
   than assumed, because the first version of this page asserted the opposite from memory.
 - **D3 is the observability adapter**, not just the Dioxus binding. Its drain loop is the
-  aggregation boundary and its host supplies the clock.
+  aggregation boundary and its host supplies the clock. **Amended 2026-08-29:** the split is
+  sharper than that. The loop and its aggregate are in core; the host supplies only the clock,
+  as `SyncCadence` and an injected `Sleeper` in `crates/frontbox-dioxus`.
 - **D4 is where the convergence is tested**, since it is the first place frontbox, the services, and
   whatever kafkaman does run together.
-- **The serialization question should be settled before D5**, not because D5 forces it, but because
-  it is free now and every week of delay makes it likelier that a caller has already written the
-  hand-mapping it would remove.
+- ~~**The serialization question should be settled before D5**~~ — settled 2026-08-29 by decision
+  030, on exactly the reasoning this bullet gave: it was free, and `DrainReport` arriving meant a
+  new report type would otherwise have joined the gap rather than closing it.
 
 ## Revisit If
 

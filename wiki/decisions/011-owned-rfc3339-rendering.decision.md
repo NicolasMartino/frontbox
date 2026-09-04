@@ -5,7 +5,7 @@ Status: Accepted
 Date: 2026-08-27
 Category: Public API Shape
 Scope: Which crate produces the `client_datetime` bytes, what range the wire format admits, and what grammar it accepts on the way back in.
-Sources: `src/rfc3339.rs`, `src/rfc3339/tests.rs`, `src/record.rs`, `src/memory/mod.rs`, `Cargo.toml`, `scripts/verify.sh`
+Sources: `src/rfc3339.rs`, `src/rfc3339/tests.rs`, `src/record/mod.rs`, `src/memory/mod.rs`, `Cargo.toml`, `scripts/verify.sh`
 Related: `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/decisions/002-error-model.decision.md`, `wiki/decisions/006-corrupt-record-policy.decision.md`, `wiki/compatibility/public-dependencies.compat.md`, `wiki/specs/frontbox-runtime.spec.md`
 
 ## Decision

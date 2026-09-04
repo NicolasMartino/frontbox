@@ -12,15 +12,22 @@ use uuid::Uuid;
 ///
 /// # Ordering
 ///
-/// `Ord` compares the underlying UUID's 16 bytes. This is load-bearing: pending work is ordered by
-/// the compound key `(created_at, mutation_id)`, and a durable backend must reproduce that order
-/// exactly.
+/// `Ord` compares the underlying UUID's 16 bytes. This is load-bearing, and **not for the outbox**:
+/// pending work is ordered by the store-assigned `seq` alone, which is unique and needs no tiebreak
+/// (`wiki/decisions/016-monotonic-enqueue-sequence.decision.md`).
+///
+/// The consumers are the **terminal stores**. `DeadLetterStore::list` is ordered by
+/// `(rejected_at, mutation_id)` and `QuarantineStore::list` by
+/// `(quarantined_at, raw_mutation_id)`, and both tiebreaks are reached routinely — an injected
+/// clock parks two records at one timestamp, and a real one can too, since nothing makes the clock
+/// behind a retention sweep run ahead of the clock behind a server rejection. Case 68 is where that
+/// is asserted.
 ///
 /// Text ordering agrees with byte ordering as long as **every row uses the same textual form** and
 /// the column carries a **binary collation**. ASCII puts digits below both letter cases, so
 /// consistently lowercase and consistently uppercase hex each sort correctly, and the hyphens sit
 /// at fixed positions so they never separate two canonical strings. A SQLite
-/// `ORDER BY created_at, mutation_id` over a `TEXT` column holding [`MutationId::to_string`] output
+/// `ORDER BY rejected_at, mutation_id` over a `TEXT` column holding `MutationId::to_string` output
 /// therefore yields the identical order — as does a `BLOB` column holding `Uuid::as_bytes`, which
 /// SQLite compares bytewise.
 ///
@@ -34,7 +41,7 @@ use uuid::Uuid;
 /// straddles the case boundary, and a row written without hyphens sorts before a hyphenated one
 /// whenever their first eight characters match — `-` is `0x2D`, below every hex digit. Both are
 /// what a migration, a second write path, or a hand-edited row produces. The safe rule for a
-/// backend is to store exactly what [`MutationId::to_string`] returns and never transform it; this
+/// backend is to store exactly what `MutationId::to_string` returns and never transform it; this
 /// module's tests demonstrate both inversions.
 ///
 /// `wiki/specs/frontbox-runtime.spec.md` carries this as a D5 constraint, because it is a schema
@@ -105,7 +112,7 @@ mod tests {
     /// The D5 durable-schema constraint, made checkable.
     ///
     /// A backend storing `mutation_id` as text and ordering by it reproduces core's order only if
-    /// the text sorts the way the bytes do. It does — for the form [`MutationId::to_string`]
+    /// the text sorts the way the bytes do. It does — for the form `MutationId::to_string`
     /// produces — across the whole nibble range and both boundaries that could plausibly diverge.
     #[test]
     fn canonical_text_sorts_the_same_way_the_bytes_do() {

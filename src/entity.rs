@@ -66,6 +66,17 @@ pub trait EntityRegistry {
 /// Matches by [`EntityKey::as_str`], which is the definition of the wire form, so an application
 /// whose keys are already strings or a `&'static str` enum needs nothing else. An application with
 /// aliases, plurals, or a legacy spelling implements [`EntityRegistry`] itself.
+///
+/// # `parse` is a linear scan, on purpose
+///
+/// A registry names the entity *types* an application models, not its rows — the source system has
+/// six, the trial has one. At that size a scan beats a map: no hashing, no allocation, and the keys
+/// sit in one contiguous slice. It is called once per invalidation event, not once per row.
+///
+/// An application registering hundreds should implement [`EntityRegistry`] over its own map rather
+/// than ask this type to grow one. That is the reason the trait exists separately from this
+/// implementation, and it is the same shape as everything else here: core supplies the obvious
+/// default and does not stand between a caller and a better one.
 #[derive(Debug, Clone)]
 pub struct SliceRegistry<K> {
     keys: Vec<K>,

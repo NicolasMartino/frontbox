@@ -27,6 +27,24 @@ frontbox::frontbox_cache_tests! {
     block_on: pollster::block_on,
 }
 
+frontbox::frontbox_single_flight_tests! {
+    #[test]
+    factory: InMemoryFactory::new(),
+    block_on: pollster::block_on,
+}
+
+frontbox::frontbox_blocking_only_tests! {
+    #[test]
+    factory: InMemoryFactory::new(),
+    block_on: pollster::block_on,
+}
+
+frontbox::frontbox_row_tests! {
+    #[test]
+    factory: InMemoryFactory::new(),
+    block_on: pollster::block_on,
+}
+
 /// The async emission shape, compiled but not run.
 ///
 /// The backend that needs it is IndexedDB, which is D5 and does not exist yet, and no attribute
@@ -53,6 +71,16 @@ mod async_shape {
     }
 
     frontbox::frontbox_cache_tests_async! {
+        #[allow(dead_code)]
+        factory: InMemoryFactory::new(),
+    }
+
+    frontbox::frontbox_single_flight_tests_async! {
+        #[allow(dead_code)]
+        factory: InMemoryFactory::new(),
+    }
+
+    frontbox::frontbox_row_tests_async! {
         #[allow(dead_code)]
         factory: InMemoryFactory::new(),
     }

@@ -3,19 +3,6 @@
 use super::prelude::*;
 
 /// Open an outbox and a version store on one scope.
-async fn open_both<F: VersionStoreFactory>(
-    factory: &F,
-) -> Result<(F::Store, F::Versions, ScopeKey), Error> {
-    let key = scope("user:alice@tenant:acme@schema:1");
-    let outbox = factory.open(key.clone()).await?;
-    let versions = factory.open_versions(key.clone()).await?;
-    Ok((outbox, versions, key))
-}
-
-fn cache<V: CacheVersionStore>(store: V) -> InvalidationRunner<V, SliceRegistry<&'static str>> {
-    InvalidationRunner::new(store, registry())
-}
-
 /// Asking what is stale also answers what refetching it would cost.
 ///
 /// The source's listener refetches eagerly and never consults the outbox, so nothing in its call

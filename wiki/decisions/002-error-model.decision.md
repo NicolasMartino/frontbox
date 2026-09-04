@@ -99,3 +99,15 @@ classification in the error value.
 Implementation discovers a platform failure type that cannot be represented as a boxed source or
 as a clearly typed core variant. That should produce a new variant, not a fallback to string
 classification.
+
+## What The Backends Added
+
+**`Error::storage_message` exists because IndexedDB asked for it.** The original set carried an
+opaque storage variant, on the argument that a caller cannot act on a backend's internal failure.
+That held for SQLite and stopped holding in a browser: `QuotaExceededError` and
+`TransactionInactiveError` are two DOM exceptions an operator genuinely has to tell apart, and
+collapsing both into "storage failure" hides the only useful thing the browser said.
+
+So the variant carries a message the backend supplies and core never parses — the same shape as
+`last_error` (033) and `DeadLetterReason::Caller` (027), and for the same reason: core states a
+bound, the implementor supplies the words, and nothing branches on the string.

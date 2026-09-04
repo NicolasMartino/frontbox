@@ -18,26 +18,32 @@
 mod anomalies;
 mod corruption;
 mod dead_letters;
+mod drain;
 mod envelope;
 mod invalidation;
 mod liveness;
 mod ordering;
 mod pass_control;
 mod pull_conflict;
+mod rows;
 mod scope_isolation;
+mod single_flight;
 mod status;
 mod transport;
 
 pub use anomalies::*;
 pub use corruption::*;
 pub use dead_letters::*;
+pub use drain::*;
 pub use envelope::*;
 pub use invalidation::*;
 pub use liveness::*;
 pub use ordering::*;
 pub use pass_control::*;
 pub use pull_conflict::*;
+pub use rows::*;
 pub use scope_isolation::*;
+pub use single_flight::*;
 pub use status::*;
 pub use transport::*;
 
@@ -55,7 +61,7 @@ mod prelude {
     pub(super) use crate::error::Error;
     pub(super) use crate::protocol::{MutationResult, MutationStatus};
     pub(super) use crate::record::OutboxRecord;
-    pub(super) use crate::record::{MutationIntent, OperationMeta};
+    pub(super) use crate::record::{DeadLetterReason, MutationIntent, OperationMeta};
     pub(super) use crate::runner::{Anomaly, AnomalyKind, SyncPass, SyncRunner};
     pub(super) use crate::scope::ScopeKey;
     pub(super) use crate::store::{
@@ -66,7 +72,7 @@ mod prelude {
         ScriptedTransport, StoreFactory, VersionStoreFactory,
     };
 
-    pub(super) use super::{open, runner, seed};
+    pub(super) use super::{cache, open, open_both, runner, seed};
 }
 
 use prelude::*;
@@ -88,4 +94,23 @@ async fn seed<S: OutboxStore>(store: &S, n: u128) -> Result<(), Error> {
 
 fn runner<S: OutboxStore>(store: S, reply: Reply) -> SyncRunner<S, ScriptedTransport> {
     SyncRunner::new(store, ScriptedTransport::new(reply))
+}
+
+/// Open an outbox and a version store on one scope.
+///
+/// Both halves of decision 014's question live here: whether an entity is stale is a version-store
+/// fact, and whether refetching it would discard work is an outbox fact. A case that could only
+/// open one of them could not ask the question.
+async fn open_both<F: VersionStoreFactory>(
+    factory: &F,
+) -> Result<(F::Store, F::Versions, ScopeKey), Error> {
+    let key = scope("user:alice@tenant:acme@schema:1");
+    let outbox = factory.open(key.clone()).await?;
+    let versions = factory.open_versions(key.clone()).await?;
+    Ok((outbox, versions, key))
+}
+
+/// Wrap a version store in an invalidation runner over the suite's registry.
+fn cache<V: CacheVersionStore>(store: V) -> InvalidationRunner<V, SliceRegistry<&'static str>> {
+    InvalidationRunner::new(store, registry())
 }

@@ -1,7 +1,7 @@
 # A Transport That Synthesizes A Verdict Owes The Care A Server Would Have Taken
 
 Document Class: Decision
-Status: Accepted 2026-08-27; implementation not authorized
+Status: Accepted 2026-08-27; documented on `SyncTransport` 2026-08-29
 Date: 2026-08-27
 Category: Sync Semantics
 Scope: Who decides terminal versus transient when no server produces a `MutationBatchResponse`, and what `SyncTransport` obliges an implementor to get right.
@@ -130,10 +130,57 @@ drained — is answered by the server, which is where the information was all al
   `RemoteRejection::code` is where the first two differ. That is workable and it is a convention
   rather than a guarantee — worth stating so nobody expects the enum to carry it.
 
-## Revisit If
+## Implementation Outcome
+
+**Written into `SyncTransport`'s documentation 2026-08-29**, as a section beside "Partial and
+surplus responses" — which is where a transport author is already reading. It carries the three
+obligations, a concrete mapping table for RepForge's `retry` field, and two things this page did not
+anticipate.
+
+**The status-line fallback rests on an invariant worth checking rather than assuming.** RepForge's
+answer makes body-*absence* the discriminator between "a service ruled on this" and "this never got
+there". The documentation says so and then tells the implementor to satisfy themselves it holds in
+their deployment, because a proxy in front of the gateway returning a parseable error body would
+break it — and a rate limiter read as a service verdict dead-letters work that would have succeeded.
+That is this decision's own failure mode relocated one hop upstream.
+
+**The vocabulary has no word for "transient", and the documentation says so rather than forcing a
+fit.** All three retaining statuses are wrong in different ways: `Blocked` covers a missing
+prerequisite and not a dependency being down; `Pending` asserts the server *accepted* the mutation,
+which a transient refusal is not; `Unknown` is honest but reports a routine condition through the
+channel that exists for vocabulary mismatches. So the documented obligation is **the disposition,
+not the spelling** — a transient condition must retain — and which status carries it is a diagnostic
+choice. A variant that means what it says would be the fix, and that is a public API change not made
+here.
+
+
 
 RepForge's services return a structured error body that classifies terminality explicitly — a field
 saying "this will never succeed" versus "retry after the parent exists". That moves the judgment
 back to the server, where it belongs and where it has the information, and reduces this decision to
 a mapping table. It is worth asking for while the services are still being designed, which is the
 one request this project should make of the redesign rather than accommodate.
+
+## Where The Mapping Table Actually Lives
+
+`src/transport.rs` carries the concrete status-to-verdict table this page argues for, in the
+longest doc comment in the crate — including the admission that **the section is enforced by
+review, which is weaker than the standard the rest of the crate holds itself to.** That sentence is
+the honest one and it should stay where an implementor reads it.
+
+This page is now cited by decision 037 as the operative reference for a *routing* transport, which
+raises the stakes: a client whose writes span services has more ways to fail than one whose writes
+do not, and the classification of each is still the transport's. Two consequences worth stating
+here rather than leaving to be rediscovered.
+
+**A missing prerequisite is `Blocked`, not `Unknown`.** This page describes the condition — *"this
+write failed only because a predecessor had not landed"* — and it is precisely what a `404` means to
+a routing transport that sent a todo for a user whose creation has not drained yet. `Unknown` is
+reserved for a response the transport genuinely *cannot* classify, and this one it can. The
+difference is observable: `Blocked` retains with `counts.blocked`, and only `Unknown` raises an
+anomaly.
+
+**A transport that could not reach a service is the same fact from a different cause.** Returning
+the verdicts it obtained and staying silent about the rest is already modelled — `src/runner/mod.rs`
+retains any record the response did not name, with `reason: Some("no verdict returned")`. Synthesis
+was built for a server that declines to rule, and it covers a service that could not be asked.

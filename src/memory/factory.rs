@@ -94,6 +94,16 @@ impl crate::testing::VersionStoreFactory for InMemoryFactory {
     }
 }
 
+impl crate::testing::RowStoreFactory for InMemoryFactory {
+    // The same type as `Store`, which is what the trait's own note says to expect: `merge_rows`
+    // has to see the queue to know which rows the queue is protecting.
+    type Rows = InMemoryStore;
+
+    async fn open_rows(&self, scope: ScopeKey) -> Result<Self::Rows, Error> {
+        Ok(self.backend.open(scope))
+    }
+}
+
 impl crate::testing::FaultInjection for InMemoryFactory {
     async fn fail_next_apply_outcomes(&self) {
         self.backend.fail_next(StoreOp::ApplyOutcomes);

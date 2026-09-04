@@ -5,7 +5,7 @@ Status: Accepted; implemented 2026-08-27
 Date: 2026-08-27
 Category: Public API Shape
 Scope: What happens when a server answers with a `MutationStatus` this crate has never heard of, and what signal the caller gets.
-Sources: `src/protocol.rs`, `src/runner.rs`, `src/store.rs`
+Sources: `src/protocol.rs`, `src/runner/mod.rs`, `src/store.rs`
 Related: `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/019-verdict-synthesis.decision.md`, `wiki/decisions/006-corrupt-record-policy.decision.md`, `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/decisions/013-unknown-entity-name.decision.md`, `wiki/specs/frontbox-runtime.spec.md`
 
 ## Decision

@@ -1,11 +1,11 @@
 # Response To RepForge's 2026-08-28 Revision: The Read Side And The Convergence
 
 Document Class: Proposal
-Status: Proposed
+Status: **Accepted 2026-08-28**; produced decisions 021-023, and 023 was later superseded in part by 032
 Date: 2026-08-28
 Category: Architecture
 Scope: frontbox's answer to the read-model, trace-context, and observability sections added in RepForge's 2026-08-28 revision, and to the eight questions it asks.
-Sources: `src/cache/`, `src/record.rs`, `Cargo.toml`, `scripts/verify.sh`, `wiki/references/repforge-single-flight-proposal.reference.md`
+Sources: `src/cache/`, `src/record/mod.rs`, `Cargo.toml`, `scripts/verify.sh`, `wiki/references/repforge-single-flight-proposal.reference.md`
 Related: `wiki/proposals/single-flight-drain.proposal.md`, `wiki/decisions/020-observability-surface.decision.md`, `wiki/decisions/021-cache-version-identity.decision.md`, `wiki/decisions/022-durable-trace-context.decision.md`, `wiki/decisions/023-read-model-boundary.decision.md`, `wiki/decisions/014-pull-gating.decision.md`, `wiki/decisions/015-cache-version-persistence.decision.md`
 
 ## 0. Summary

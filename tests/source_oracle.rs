@@ -32,6 +32,7 @@
 //! assertion — each records what the source did and why this crate does otherwise. That is a
 //! legitimate use of a test, but it is not an oracle, and the distinction is worth keeping visible.
 
+use frontbox::record::DeadLetterReason;
 use frontbox::{
     Clock, DeadLetterStore, Disposition, InMemoryBackend, ManualClock, MutationBatchRequest,
     MutationBatchResponse, MutationId, MutationIntent, MutationResult, MutationStatus, OutboxStore,
@@ -137,7 +138,12 @@ fn purge_removes_only_expired_dead_letters() {
             .await
             .expect("enqueue old");
         store
-            .apply_outcomes(&[Outcome::new(id(1), Disposition::DeadLetter { error: None })])
+            .apply_outcomes(&[Outcome::new(
+                id(1),
+                Disposition::DeadLetter {
+                    reason: DeadLetterReason::Caller("oracle fixture".into()),
+                },
+            )])
             .await
             .expect("dead-letter old");
 
@@ -153,7 +159,12 @@ fn purge_removes_only_expired_dead_letters() {
             .await
             .expect("enqueue recent");
         store
-            .apply_outcomes(&[Outcome::new(id(2), Disposition::DeadLetter { error: None })])
+            .apply_outcomes(&[Outcome::new(
+                id(2),
+                Disposition::DeadLetter {
+                    reason: DeadLetterReason::Caller("oracle fixture".into()),
+                },
+            )])
             .await
             .expect("dead-letter recent");
 
@@ -323,6 +334,7 @@ fn pending_count_needs_no_refresh() {
 }
 
 // ---------------------------------------------------------------------------
+// Fixtures
 // ---------------------------------------------------------------------------
 
 /// A transport that answers with one canned response, or refuses to send.

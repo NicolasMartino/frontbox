@@ -2,10 +2,10 @@
 
 Document Class: Compatibility Note
 Status: Active
-Date: 2026-08-27 (chrono removed the same day, decision 011)
+Date: 2026-08-27 (chrono removed the same day, decision 011; report types added 2026-08-29)
 Category: Public API Shape
 Scope: Which third-party crates appear in frontbox's public API and therefore in its semver contract, and which server payload the wire format targets.
-Sources: `Cargo.toml`, `src/id.rs`, `src/record.rs`, `src/protocol.rs`, `src/error.rs`
+Sources: `Cargo.toml`, `src/id.rs`, `src/record/mod.rs`, `src/protocol.rs`, `src/error.rs`
 Related: `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/decisions/011-owned-rfc3339-rendering.decision.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/decisions/002-error-model.decision.md`, `wiki/specs/frontbox-runtime.spec.md`
 
 ## Why This Page Exists
@@ -25,13 +25,23 @@ the same crate are two unrelated types to the compiler: a caller pinned to `uuid
 | --- | --- | --- | --- |
 | `serde_json` | `1` | `MutationIntent::body` and `OutboxRecord::body` are `serde_json::Value`; `RemoteRejection::details` is `Option<Value>`; `Error::Serialization` carries `serde_json::Error` | No — every enqueue names a `Value` |
 | `uuid` | `1` | `MutationId::from_uuid` and `MutationId::as_uuid` take and return `uuid::Uuid`; `<MutationId as FromStr>::Err` is `uuid::Error` | Only with the `v4` feature, which supplies `MutationId::new()` and `FromStr` |
-| `serde` | `1` | `Serialize`/`Deserialize` are implemented on every protocol and record type | No — implementing a transport means serializing them |
+| `serde` | `1` | `Serialize`/`Deserialize` are implemented on every protocol and record type, and `Serialize` alone on every report type | No — implementing a transport means serializing them |
 
 All three are major `1`. The full runtime dependency graph is `serde`, `serde_json`, `thiserror`,
 and `uuid`; `scripts/verify.sh` asserts no date library is anywhere in it.
 
 `thiserror` is **not** public surface. It is a derive macro that generates ordinary
 `std::error::Error` impls; nothing in the API mentions it, and its major version can move freely.
+
+### The report types serialize one way, added 2026-08-29
+
+`SyncReport`, `SyncOutcomeCounts`, `SyncPass`, `Anomaly`, `AnomalyKind`, `DrainReport` and
+`DrainEnd` derive `Serialize` and deliberately not `Deserialize`
+(`wiki/decisions/030-serializable-reports.decision.md`). That widens `serde`'s row above rather
+than adding a fourth crate: `serde` was already unavoidable for anyone implementing a transport.
+
+The serialized *shape* of a report is not part of the contract the way the wire format below is.
+No server parses it, so a future release may reshape a report's JSON.
 
 ### `chrono` was on this list for one day
 
@@ -74,6 +84,25 @@ rejects unknown fields sees nothing new until the caller opts in.
 
 What holds this true: conformance case 27 asserts the exact key set and the exact `client_datetime`
 string, and `tests/dto_oracle.rs` ports the round-trip tests from the source's own `dto.rs`.
+
+## The Backend Crates Have Public Surfaces Of Their Own
+
+**This page is about `frontbox`, and that is now a narrower claim than it reads.** Two backend
+crates exist, and each puts a crate in *its own* semver contract that core does not carry:
+
+| Crate | Public dependency | Why it is public |
+| --- | --- | --- |
+| `frontbox-sqlite` | `rusqlite` (major `0.3x`) | `SqliteBackend::open` takes a path, but errors originate as `rusqlite::Error` and the schema is SQL. A `rusqlite` major bump is a bump here |
+| `frontbox-indexeddb` | `web-sys`, `wasm-bindgen`, `js-sys` (all `0.x`) | Every type crossing the JS boundary comes from them |
+
+Both are pre-1.0, so both are in the same position `frontbox-dioxus` is in with Dioxus: **a
+consumer takes the risk knowingly, and the risk is the adapter's rather than core's.** That
+separation is the whole reason they are separate crates — an application that only wants the queue
+and supplies its own storage takes none of it.
+
+Core's own graph is unchanged and still holds: `serde_json`, `uuid`, `serde`, all major `1`, and
+`scripts/verify.sh` proves it against `cargo tree -p frontbox --edges normal` rather than against a
+manifest.
 
 ## Still Outstanding Before Release
 

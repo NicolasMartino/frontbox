@@ -4,9 +4,14 @@
 //! that survives restarts, replays when connectivity returns, and routes server refusals into dead
 //! letters instead of losing them.
 //!
-//! This is D1, the framework-neutral core. It has no Dioxus dependency and no dependency on any
-//! particular application's domain types. Cache versioning and invalidation (D2), the Dioxus
-//! adapter (D3), and the durable SQLite and IndexedDB backends (D5) are separate deliverables.
+//! This is the framework-neutral core: the outbox and sync runtime (D1), cache versioning and
+//! invalidation (D2), and the drain loop (D3a). It has no Dioxus dependency and no dependency on
+//! any particular application's domain types — `scripts/verify.sh` asserts the first against
+//! `cargo tree` rather than against the manifest, because the workspace now contains a Dioxus
+//! crate.
+//!
+//! The Dioxus bindings (`frontbox-dioxus`, D3b) and the durable SQLite and IndexedDB backends
+//! (D5) are separate deliverables.
 //!
 //! ## What is here
 //!
@@ -16,6 +21,8 @@
 //! - [`SyncRunner`] — one sync pass: read a bounded batch, send it, apply the verdicts atomically.
 //!   Each pass returns a [`SyncReport`], whose [`made_progress`](SyncReport::made_progress) and
 //!   [`is_stalled`](SyncReport::is_stalled) separate a queue that drained nothing from an empty one.
+//!   [`SyncRunner::drain`] runs passes back to back until the queue stops draining, and returns one
+//!   [`DrainReport`] for all of them.
 //! - [`InMemoryBackend`] — a complete backend, with failure injection, for tests and examples.
 //!
 //! ## Shape
@@ -132,8 +139,8 @@ pub mod transport;
 pub mod testing;
 
 pub use cache::{
-    CacheVersion, CacheVersionStore, EntityState, InvalidationEvent, InvalidationReport,
-    InvalidationRunner, PendingConflict, StaleEntity, VersionUpdate,
+    CacheVersion, CacheVersionStore, ClassifiedConflict, EntityState, InvalidationEvent,
+    InvalidationReport, InvalidationRunner, PendingConflict, StaleEntity, VersionUpdate,
 };
 pub use clock::Clock;
 #[cfg(not(target_arch = "wasm32"))]
@@ -148,9 +155,16 @@ pub use protocol::{
     MutationBatchRequest, MutationBatchResponse, MutationResult, MutationStatus, RemoteRejection,
 };
 pub use record::{
-    DeadLetterRecord, MutationIntent, OperationMeta, OutboxRecord, QuarantinedRecord,
+    truncate_error, DeadLetterReason, DeadLetterRecord, MutationIntent, OperationMeta,
+    OutboxRecord, QuarantinedRecord, RowRef, StoredRow, LAST_ERROR_MAX,
 };
-pub use runner::{Anomaly, AnomalyKind, SyncOutcomeCounts, SyncPass, SyncReport, SyncRunner};
+pub use rfc3339::is_representable as timestamp_is_representable;
+pub use runner::{
+    Anomaly, AnomalyKind, DrainEnd, DrainReport, Drained, DrainedAs, SyncOutcomeCounts, SyncPass,
+    SyncReport, SyncRunner,
+};
 pub use scope::ScopeKey;
-pub use store::{DeadLetterStore, Disposition, OutboxStore, Outcome, QuarantineStore};
+pub use store::{
+    DeadLetterStore, Disposition, DrainLease, OutboxStore, Outcome, QuarantineStore, RowStore,
+};
 pub use transport::SyncTransport;

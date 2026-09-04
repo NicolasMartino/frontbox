@@ -22,6 +22,11 @@ use serde::{Deserialize, Serialize};
 /// express that equality cannot is "the server is *behind* me", which is not a state a client can
 /// act on: the source's own handling treats it as corruption to reset from, not as information.
 ///
+/// **So the absence of [`PartialOrd`] is the decision, not an omission.** It is not derived here
+/// and must not be added by a later convenience: a type that can be compared with `<` will be, and
+/// the first caller to do it will be comparing two hex hashes as text. The compiler refusing that
+/// is the whole enforcement mechanism, since core cannot see what a caller stores inside.
+///
 /// # What a caller puts here
 ///
 /// Whatever its server sends, rendered to a string: a hex set hash, a decimal counter, an ETag, a

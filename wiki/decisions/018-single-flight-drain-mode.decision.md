@@ -1,11 +1,11 @@
 # Single-Flight Drain Is A Supported Mode, Not The Default
 
 Document Class: Decision
-Status: Accepted 2026-08-27; implementation not authorized
+Status: Accepted 2026-08-27; profile implemented 2026-08-29; drain loop implemented and one claim corrected 2026-08-29
 Date: 2026-08-27
 Category: Public API Shape
 Scope: Whether `batch_limit = 1` becomes frontbox's default, and what "first-class support" for it costs.
-Sources: `src/runner.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/mutations.rs`, `wiki/references/repforge-single-flight-proposal.reference.md`
+Sources: `src/runner/mod.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/mutations.rs`, `wiki/references/repforge-single-flight-proposal.reference.md`
 Related: `wiki/decisions/020-observability-surface.decision.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/016-monotonic-enqueue-sequence.decision.md`, `wiki/proposals/single-flight-drain.proposal.md`, `wiki/roadmaps/extraction.roadmap.md`
 
 ## Decision
@@ -72,10 +72,14 @@ the honest sequence is 017, then the drain loop, then the estimate.
 
 ## Consequences
 
-- **D3 owes a drain-until-idle loop**, and it is now a correctness-adjacent requirement rather than
-  a performance nicety: at limit 1 the sync interval multiplies the backlog. The loop must terminate
-  on `Idle` and `Offline` and must not spin on a retained head, which decision 017 is what makes
-  possible.
+- ~~**D3 owes a drain-until-idle loop**, and it is now a correctness-adjacent requirement rather
+  than a performance nicety: at limit 1 the sync interval multiplies the backlog. The loop must
+  terminate on `Idle` and `Offline` and must not spin on a retained head, which decision 017 is
+  what makes possible.~~ **Built 2026-08-29, and the last clause is wrong** — see
+  `## The Drain Loop, And What This Page Got Wrong About It` below. The loop is
+  `SyncRunner::drain`, it lives in core rather than in the adapter
+  (`wiki/decisions/028-drain-loop-boundary.decision.md`), and it terminates on *no progress*
+  rather than on `Idle` (`wiki/decisions/029-drain-termination.decision.md`).
 - **The conformance profile is not a third emission of one list.** The sync and async macros can
   share a list because they differ only in how a case is driven. The single-flight profile differs
   in what a case may assert, so it needs a parameterized helper, a visible exclusion list, and cases
@@ -134,6 +138,64 @@ that cannot implement a factory: the gap lives in the test file rather than behi
 so a reader sees what is not covered. The single-flight profile inherits that rule. Four unreachable
 cases named in one place is a fact about the mode; four cases quietly absent from a green run is a
 coverage claim that is not true.
+
+## Implementation Outcome
+
+**Built 2026-08-29**, and the shape is not the one this page described.
+
+**The profile is its own case list, not the outbox list re-run at a different limit.** This page
+established that a re-run does not work; building it showed that the *adaptation* does not work
+either. Of the seven cases named here, four lose their subject entirely and no rewrite recovers
+them, and the remaining three — 07, 20 and 33 — assert `sent` or `retained` equal to the seed count.
+Rewriting those three in place would have broken them at the default limit, and parameterizing every
+case function to know a batch limit means threading a value through forty signatures for the benefit
+of three.
+
+So the profile is a fifth suite macro beside the four that already exist —
+`frontbox_single_flight_tests!`, with `__frontbox_single_flight_suite!` holding one list. That is the
+pattern `frontbox_cache_tests!` and `frontbox_fault_injection_tests!` already set: a backend that
+cannot satisfy a profile does not invoke it, which leaves the gap visible in its test file.
+
+**Three cases, each earning its place**, rather than a wide re-emission of behaviour that is
+identical at either limit:
+
+- **52** — one record per pass whatever the outcome, across an offline pass, a fully retained pass
+  and an omitted verdict. This is what cases 07, 20 and 33 were reaching for, stated against the
+  limit instead of the seed.
+- **53** — a wedged head freezes the entire queue, and a retention bound is the only thing that
+  frees it. The case this mode exists to make observable, and the whole argument for decision 017 in
+  one place: three passes, three requests carrying the same record, nothing behind it moving, then
+  the same queue with a bound draining.
+- **54** — the server sees one record at a time in enqueue order, with the records enqueued against
+  both orders the old key would have produced.
+
+**The four exclusions are named in the macro's own documentation**, which is where a reader looking
+at the profile will be. Four cases quietly absent from a green run would be a coverage claim that is
+not true.
+
+## The Drain Loop, And What This Page Got Wrong About It
+
+**Built 2026-08-29.** The estimate this page spends its longest paragraph on is now recoverable,
+and conformance case 60 measures it: five records at `batch_limit = 1` drain in one `drain()` call
+and five requests, where the source's loop spreads the same five over five poll intervals.
+
+**One claim in `## Consequences` was wrong, and it was the load-bearing one.** This page said the
+loop "must not spin on a retained head, which decision 017 is what makes possible". Building it
+showed that 017 does not make it possible. It makes the spin *finite*, and it pays for that by
+destroying its own meaning.
+
+017's bound counts verdicts **received**, not requests sent, and a back-to-back drain receives them
+as fast as the network allows. A bound of eight against a head the server never resolves becomes
+eight requests inside a second at a 100 ms round trip, and then a dead letter — so a policy meaning
+*give the server eight chances* is spent before the server has had one. Without a configured bound,
+and 017 ships with no default, the same loop is an unbounded hot loop.
+
+The correction is that a drain stops on the first pass that **makes no progress**, not on `Idle`.
+That also supplies a termination argument this page never had: a pass that continues the loop
+removed at least one record, so the queue is strictly shorter each time round. The retention bound
+goes back to being what 017 designed — one attempt per drain, spread by the caller's cadence.
+See `wiki/decisions/029-drain-termination.decision.md`, and conformance case 58, which asserts a
+send count of one and fails against the reading this page originally implied.
 
 ## Revisit If
 

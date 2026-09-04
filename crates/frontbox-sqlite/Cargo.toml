@@ -1,0 +1,26 @@
+[package]
+name = "frontbox-sqlite"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+description = "Durable SQLite persistence for frontbox, on native targets"
+
+[dependencies]
+frontbox = { path = "../.." }
+# Synchronous on purpose. `sqlx` is built around `Send` futures, which decision 001's `!Send`
+# posture and the `no Send bound` gate both rule out; `rusqlite` blocks, so the `async fn`s in
+# `OutboxStore` complete without ever yielding. Honest for a local file, and it keeps every future
+# `!Send` rather than pretending otherwise.
+#
+# `bundled` so the suite does not depend on whatever libsqlite3 a machine happens to ship.
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde_json = "1"
+
+[features]
+# Mirrors core: the conformance factory is not compiled into applications.
+testing = ["frontbox/testing"]
+
+[dev-dependencies]
+frontbox = { path = "../..", features = ["testing"] }
+pollster = "0.4"

@@ -1,0 +1,10 @@
+[application]
+name = "todo-app"
+out_dir = "dist"
+
+[web.app]
+title = "frontbox todo trial"
+
+[web.watcher]
+reload_html = true
+watch_path = ["src", "Cargo.toml", "Dioxus.toml"]

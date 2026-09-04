@@ -119,7 +119,7 @@ write.
 
 ## Amendment 2026-08-26: The Enqueue Input And The Stored Record Are Two Types
 
-*The shape below is what shipped. `src/record.rs` is now the authority on the exact signatures; the
+*The shape below is what shipped. `src/record/mod.rs` is now the authority on the exact signatures; the
 rationale above and below is why they are what they are, and stays because a reader who wants to
 change them needs it.*
 

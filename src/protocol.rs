@@ -230,3 +230,69 @@ impl MutationBatchResponse {
         Self { results }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every variant survives a round trip, spelled the way the server spelled it.
+    ///
+    /// The `Serialize`/`Deserialize` pair here is hand-written rather than derived, precisely so
+    /// `Unknown` can be transparent — `"Throttled"` in, `"Throttled"` out, never a nested
+    /// `{"Unknown": …}`. A derive would produce the nested form and the wire would stop matching
+    /// the source protocol for exactly the case decision 012 exists to handle.
+    ///
+    /// Enumerated rather than sampled, because the failure this catches is a *missing arm*: the
+    /// deserializer's match has one line per known status, and a status omitted from it does not
+    /// fail — it silently becomes `Unknown("Applied")`, which retains a record the server applied
+    /// and keeps re-sending it forever.
+    #[test]
+    fn every_status_round_trips_through_its_wire_name() {
+        let cases = [
+            (MutationStatus::Applied, "\"Applied\""),
+            (MutationStatus::Duplicate, "\"Duplicate\""),
+            (MutationStatus::Rejected, "\"Rejected\""),
+            (MutationStatus::Blocked, "\"Blocked\""),
+            (MutationStatus::Pending, "\"Pending\""),
+            (MutationStatus::Unknown("Throttled".into()), "\"Throttled\""),
+        ];
+
+        for (status, wire) in cases {
+            let rendered = serde_json::to_string(&status).expect("serialize");
+            assert_eq!(rendered, wire, "{status:?} must render as its bare name");
+
+            let parsed: MutationStatus = serde_json::from_str(wire).expect("deserialize");
+            assert_eq!(parsed, status, "{wire} must parse back to what wrote it");
+        }
+    }
+
+    /// An unrecognised status keeps the server's exact bytes, including ones a match arm cannot.
+    ///
+    /// Case, whitespace and non-ASCII are all preserved, because the string exists to be read by a
+    /// human diagnosing a stall. Normalising it would make two different server states look like
+    /// one, which is the same argument `ScopeKey` and `CacheVersion` both make.
+    #[test]
+    fn an_unknown_status_is_kept_verbatim() {
+        for raw in ["applied", "APPLIED", "rate limited", "refusé", ""] {
+            let wire = serde_json::to_string(raw).expect("quote");
+            let parsed: MutationStatus = serde_json::from_str(&wire).expect("deserialize");
+            assert_eq!(
+                parsed,
+                MutationStatus::Unknown(raw.to_owned()),
+                "{raw:?} is not a status this crate knows, so it must survive unchanged"
+            );
+            assert_eq!(serde_json::to_string(&parsed).expect("serialize"), wire);
+        }
+    }
+
+    /// A response may rule on fewer mutations than were sent, and that must parse.
+    ///
+    /// The omission is meaningful — the runner retains what the server stayed silent about — so a
+    /// response with an empty `results` is well-formed rather than an error.
+    #[test]
+    fn a_response_may_omit_verdicts() {
+        let empty: MutationBatchResponse =
+            serde_json::from_str(r#"{"results":[]}"#).expect("deserialize");
+        assert!(empty.results.is_empty());
+    }
+}

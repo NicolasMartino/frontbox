@@ -1,0 +1,12 @@
+.git
+target
+.coverage
+.DS_Store
+**/*.rs.bk
+examples/todo-app/dist
+
+# Prose and provenance. Neither Dockerfile compiles them, and `COPY . .` would otherwise ship
+# ~1.6 MB of markdown into every build context — `wiki/` is the project's own record and `raw/` is
+# immutable copied source from RepForge.
+wiki
+raw

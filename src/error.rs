@@ -82,6 +82,23 @@ pub enum Error {
     },
 }
 
+/// A storage failure that was only ever a string.
+///
+/// Private, and deliberately not part of the public surface: a caller matching on the concrete
+/// type of a storage source is coupling itself to which backend produced it, which is what
+/// `wiki/decisions/002-error-model.decision.md` keeps generic. It is reachable through
+/// [`std::error::Error::source`] as text, which is what an operator reading a log needs.
+#[derive(Debug)]
+struct StorageMessage(String);
+
+impl std::fmt::Display for StorageMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for StorageMessage {}
+
 impl Error {
     /// Build a [`Error::Transport`] from an underlying failure.
     pub fn transport(source: impl std::error::Error + 'static) -> Self {
@@ -99,6 +116,24 @@ impl Error {
     pub fn storage(source: impl std::error::Error + 'static) -> Self {
         Self::Storage {
             source: Some(Box::new(source)),
+        }
+    }
+
+    /// Build a [`Error::Storage`] from a message, for a backend whose failures are not
+    /// [`std::error::Error`] values.
+    ///
+    /// # Why this exists beside [`storage`](Error::storage)
+    ///
+    /// A JavaScript exception is a `JsValue`, not an `Error`. Without this an IndexedDB backend's
+    /// only option was [`storage_opaque`](Error::storage_opaque), which throws away the one thing
+    /// a browser failure actually tells you: `QuotaExceededError` and `TransactionInactiveError`
+    /// are different problems with different fixes, and "storage failure" is neither.
+    ///
+    /// Found while building `frontbox-indexeddb`, the second backend outside this crate, and the
+    /// fourth thing core required of a backend without exporting the means to do it.
+    pub fn storage_message(reason: impl Into<String>) -> Self {
+        Self::Storage {
+            source: Some(Box::new(StorageMessage(reason.into()))),
         }
     }
 

@@ -1,11 +1,11 @@
 # Response To RepForge: Single-Flight Drain
 
 Document Class: Proposal
-Status: Proposed
+Status: **Accepted 2026-08-27**; produced decisions 016-019, all built by 2026-08-29
 Date: 2026-08-27
 Category: Sync Semantics
 Scope: frontbox's answer to RepForge's 2026-08-27 single-flight proposal — what is accepted, what is refused, and the two places the trade was mispriced.
-Sources: `wiki/references/repforge-single-flight-proposal.reference.md`, `src/runner.rs`, `src/store.rs`, `src/record.rs`, `src/transport.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/mutations.rs`
+Sources: `wiki/references/repforge-single-flight-proposal.reference.md`, `src/runner/mod.rs`, `src/store.rs`, `src/record/mod.rs`, `src/transport.rs`, `raw/initial/2026-08-25T083750Z/sources/persistence/mutations.rs`
 Related: `wiki/decisions/016-monotonic-enqueue-sequence.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/018-single-flight-drain-mode.decision.md`, `wiki/decisions/019-verdict-synthesis.decision.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/decisions/012-unknown-mutation-status.decision.md`, `wiki/decisions/014-pull-gating.decision.md`, `wiki/roadmaps/extraction.roadmap.md`
 
 ## 0. Summary

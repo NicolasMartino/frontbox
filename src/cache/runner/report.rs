@@ -35,13 +35,6 @@ impl<K> Default for InvalidationReport<K> {
     }
 }
 
-impl<K> InvalidationReport<K> {
-    /// Whether anything now owes a refetch.
-    pub fn any_stale(&self) -> bool {
-        !self.marked_stale.is_empty()
-    }
-}
-
 /// Whether refetching an entity would discard unsent local work.
 ///
 /// Reported rather than enforced. Core does not perform the refetch — the endpoints and the read
@@ -116,4 +109,86 @@ pub struct ClassifiedConflict<K> {
     /// False when there was more pending work than the scan limit, in which case every entity's
     /// conflict degrades to [`Unattributed`](PendingConflict::Unattributed).
     pub complete: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **`Unattributed` is possible, not absent.** This is the whole point of the predicate.
+    ///
+    /// A conflict core could not attribute is unproven rather than disproven, and a false "nothing
+    /// is queued" is the answer that loses data — so `is_possible` is true for it, exactly as it is
+    /// for a conflict named against a specific entity. Only `None` means the outbox is genuinely
+    /// empty (`wiki/decisions/014-pull-gating.decision.md`).
+    #[test]
+    fn only_an_empty_outbox_reads_as_no_possible_conflict() {
+        assert!(!PendingConflict::None.is_possible());
+
+        for possible in [
+            PendingConflict::ForEntity { pending: 1 },
+            PendingConflict::Unattributed { pending: 1 },
+            PendingConflict::Unattributed { pending: 250 },
+        ] {
+            assert!(
+                possible.is_possible(),
+                "{possible:?} might discard unsent work, and must not read as safe"
+            );
+        }
+    }
+
+    /// A classified scan reports what it saw *and* whether it saw everything.
+    ///
+    /// `complete` is not a detail: an incomplete scan degrades every entity to `Unattributed`
+    /// rather than reporting a clean partial view, so a consumer that ignored this field would
+    /// turn a capped read into a false all-clear.
+    #[test]
+    fn a_classification_says_whether_it_saw_the_whole_queue() {
+        let whole = ClassifiedConflict {
+            attributed: vec![("exercises", 2)],
+            unattributed: 0,
+            complete: true,
+        };
+        assert!(whole.complete);
+        assert_eq!(whole.attributed, vec![("exercises", 2)]);
+
+        let capped = ClassifiedConflict {
+            attributed: Vec::<(&'static str, usize)>::new(),
+            unattributed: 7,
+            complete: false,
+        };
+        assert!(!capped.complete);
+        assert_eq!(
+            capped.unattributed, 7,
+            "an incomplete scan reports the whole queue as unattributed rather than claiming any \
+             entity is clean"
+        );
+    }
+
+    /// A stale entity can have no version at all, and the type has to admit it.
+    ///
+    /// `mark_all_stale` flags every registered entity, including ones no invalidation has ever
+    /// named — so `(None, stale)` is reached by the most ordinary recovery path there is, not by a
+    /// corner case (`wiki/decisions/021-cache-version-identity.decision.md`).
+    #[test]
+    fn a_stale_entity_may_carry_no_version() {
+        let never_heard = StaleEntity {
+            key: "exercises",
+            version: None,
+            conflict: PendingConflict::None,
+        };
+        assert_eq!(never_heard.version, None);
+        assert!(!never_heard.conflict.is_possible());
+
+        let known = StaleEntity {
+            key: "sessions",
+            version: Some(CacheVersion::new("a3f8")),
+            conflict: PendingConflict::ForEntity { pending: 1 },
+        };
+        assert_eq!(
+            known.version.as_ref().map(CacheVersion::as_str),
+            Some("a3f8")
+        );
+        assert!(known.conflict.is_possible());
+    }
 }

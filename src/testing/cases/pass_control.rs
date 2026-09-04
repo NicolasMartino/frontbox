@@ -36,12 +36,18 @@ pub async fn case_28_reentrant_sync_does_not_double_send<F: StoreFactory>(
         other => panic!("a re-entered sync must return immediately, got {other:?}"),
     }
 
-    loop {
-        if let Poll::Ready(result) = first.as_mut().poll(&mut cx) {
-            result?;
-            break;
-        }
-    }
+    // Finished by awaiting rather than by polling in a loop, and the difference is not cosmetic.
+    //
+    // A busy `loop { poll() }` with a noop waker never yields to whatever actually completes the
+    // work. Every backend was synchronous when this case was written, so each `await` inside
+    // resolved on the first poll and the loop terminated immediately. **An IndexedDB backend
+    // suspends on a browser event**, so the same loop spins on the only thread the event loop
+    // has, the request callback can never fire, and the case hangs the tab rather than failing.
+    //
+    // The manual polls above are still needed — they are the only way to suspend a pass mid-flight
+    // so a second can be re-entered. Once that is proven, handing the future to the real executor
+    // is both correct and backend-agnostic.
+    first.await?;
 
     assert_eq!(runner.transport().send_count(), 1);
     assert_eq!(runner.store().pending_count().await?, 0);
@@ -116,11 +122,20 @@ pub async fn case_31_duplicate_outcomes_are_rejected<F: StoreFactory>(
 
     for pair in [
         [
-            Disposition::DeadLetter { error: None },
-            Disposition::DeadLetter { error: None },
+            Disposition::DeadLetter {
+                reason: DeadLetterReason::Caller("test fixture".into()),
+            },
+            Disposition::DeadLetter {
+                reason: DeadLetterReason::Caller("test fixture".into()),
+            },
         ],
-        [Disposition::Delete, Disposition::DeadLetter { error: None }],
-        [Disposition::Retain, Disposition::Delete],
+        [
+            Disposition::Delete,
+            Disposition::DeadLetter {
+                reason: DeadLetterReason::Caller("test fixture".into()),
+            },
+        ],
+        [Disposition::Retain { reason: None }, Disposition::Delete],
     ] {
         let [first, second] = pair;
         let result = store
@@ -147,7 +162,12 @@ pub async fn case_31_duplicate_outcomes_are_rejected<F: StoreFactory>(
     store
         .apply_outcomes(&[
             Outcome::new(id(1), Disposition::Delete),
-            Outcome::new(id(2), Disposition::DeadLetter { error: None }),
+            Outcome::new(
+                id(2),
+                Disposition::DeadLetter {
+                    reason: DeadLetterReason::Caller("test fixture".into()),
+                },
+            ),
         ])
         .await?;
     assert_eq!(store.pending_count().await?, 0);

@@ -1,11 +1,11 @@
 # Enqueue Order Is Recorded, Not Inferred
 
 Document Class: Decision
-Status: Accepted 2026-08-27; implementation not authorized
+Status: Accepted 2026-08-27; implemented 2026-08-29
 Date: 2026-08-27
 Category: Sync Semantics
 Scope: What determines the order in which pending mutations are sent, and where that order is stored.
-Sources: `src/store.rs`, `src/runner.rs`, `src/record.rs`, `wiki/references/repforge-single-flight-proposal.reference.md`
+Sources: `src/store.rs`, `src/runner/mod.rs`, `src/record/mod.rs`, `wiki/references/repforge-single-flight-proposal.reference.md`
 Related: `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/019-verdict-synthesis.decision.md`, `wiki/proposals/single-flight-drain.proposal.md`, `wiki/roadmaps/extraction.roadmap.md`
 
 ## Decision
@@ -99,6 +99,27 @@ and the crate should not claim a guarantee it cannot verify.
   before durable backends"* (`wiki/index.md`, Open Work), which has been open since D0a and was
   raised there on one precedent. It is now settled on a defect in this crate rather than on prior
   art.
+
+## Implementation Outcome
+
+**Built 2026-08-29 as written**, with two things the decision did not anticipate.
+
+**Two existing cases asserted the defect and were rewritten in place**, not adapted. Case 11 asserted
+that records come back in *timestamp* order and case 12 that same-millisecond records break on the
+UUID — which is precisely the behaviour this decision removes. They keep their numbers, as case 37
+did under decision 021, because descending timestamps and a same-millisecond tie are exactly where
+the old rule and the new one disagree. Case 12 is now the case this decision's Consequences called
+for. Case 46 is new and covers the other one: enqueue order survives a reopen, with the counter
+resuming above what it issued rather than restarting.
+
+**`order_key` returns a triple, not a pair.** `(seq, created_at, mutation_id)` — the sequence is the
+order, and the remaining two are the tiebreak this decision specified for pre-column rows, which
+read as `seq` zero. They keep the order total on a partially migrated store and are reached in no
+other case.
+
+One detail worth recording for D5: `insert_raw_row`, the corruption test affordance, also takes a
+sequence. Skipping it would let a corrupt row sort ahead of everything written before it, and
+quarantine reads the same ordered store.
 
 ## Revisit If
 

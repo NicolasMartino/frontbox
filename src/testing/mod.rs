@@ -55,7 +55,7 @@ use crate::id::MutationId;
 use crate::protocol::RemoteRejection;
 use crate::record::MutationIntent;
 use crate::scope::ScopeKey;
-use crate::store::{DeadLetterStore, OutboxStore, QuarantineStore};
+use crate::store::{DeadLetterStore, OutboxStore, QuarantineStore, RowStore};
 
 pub mod cases;
 mod macros;
@@ -135,6 +135,29 @@ pub trait VersionStoreFactory: StoreFactory {
 
     /// Open a version store on `scope`.
     async fn open_versions(&self, scope: ScopeKey) -> Result<Self::Versions, Error>;
+}
+
+/// A factory whose stores also hold read-model rows.
+///
+/// Split from [`StoreFactory`] on the same principle as [`VersionStoreFactory`]: a backend that has
+/// not built decision 032's row store yet does not implement this and does not invoke
+/// [`frontbox_row_tests`], which leaves the gap visible in its test file rather than hidden.
+///
+/// # The rows and the queue must be the same store
+///
+/// [`RowStore::merge_rows`](crate::store::RowStore::merge_rows()) skips rows a *pending mutation* is
+/// bound to, so the row half and the outbox half have to see one another. `Rows` is therefore
+/// normally the same type as [`Store`](StoreFactory::Store) — the associated type exists so a
+/// backend that separates them can, not to suggest it should.
+///
+/// [`frontbox_row_tests`]: crate::frontbox_row_tests
+#[allow(async_fn_in_trait)] // See the note on `SyncTransport`; decision 001.
+pub trait RowStoreFactory: StoreFactory {
+    /// The row store under test.
+    type Rows: RowStore;
+
+    /// Open a row store on `scope`.
+    async fn open_rows(&self, scope: ScopeKey) -> Result<Self::Rows, Error>;
 }
 
 /// A factory that can also make a specific store operation fail.

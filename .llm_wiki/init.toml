@@ -1,6 +1,6 @@
 framework_version = "0.2.15"
 project_name = "frontbox"
-project_description = "An offline-first cache and mutation outbox for Rust frontends — the backend outbox pattern moved to the client. A durable local queue of writes that survives restarts, replays when connectivity returns, and routes server refusals to dead letters instead of losing them. Being extracted from RepForge's Dioxus app into a framework-neutral core plus adapters. Currently in research and planning; no implementation yet."
+project_description = "An offline-first cache and mutation outbox for Rust frontends — the backend outbox pattern moved to the client. A durable local queue of writes that survives restarts, replays when connectivity returns, and routes server refusals to dead letters instead of losing them. Being extracted from RepForge's Dioxus app into a framework-neutral core plus adapters. D1 through D5 are built: the core runtime, cache invalidation, the drain loop, a Dioxus adapter, durable SQLite and IndexedDB backends, and a four-platform trial application. Unpublished; every version is 0.0.0."
 blueprint = "library-sdk"
 packs = [
     "api",

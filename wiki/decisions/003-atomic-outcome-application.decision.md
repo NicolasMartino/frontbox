@@ -103,3 +103,21 @@ contradict this decision and supplies two independent supports:
 
 No surveyed system applies outcomes as a non-transactional remove-plus-insert. This decision stands
 as written.
+
+## What Two Durable Backends Cost, And What They Found
+
+**SQLite**: one `IMMEDIATE` transaction spanning the outbox, the dead letters and the quarantine.
+`IMMEDIATE` rather than the default deferred, because deferred takes the write lock partway through
+and can fail after work is already applied — the intermediate state this page exists to make
+unrepresentable, reintroduced by the isolation level.
+
+**IndexedDB**: one transaction naming every object store upfront, since the API requires the list
+before the first request. That backend also produced a finding this decision did not anticipate:
+**dropping a transaction handle commits it.** `rusqlite::Transaction` rolls back on drop and
+`IdbTransaction` does not — the browser owns the transaction and completes it when it goes
+inactive. So every `?` between the first write and the commit was a partial write that landed.
+`Txn` now aborts on drop unless `commit` consumed it (`crates/frontbox-indexeddb/src/request.rs`).
+
+Case 9 and case 50 are what say both backends do this, and the fault injection is placed *after*
+every write and *before* the commit — the only position that proves a rollback rather than a
+refusal to start.

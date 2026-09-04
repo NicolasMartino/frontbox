@@ -121,12 +121,20 @@ where
         O: OutboxStore,
         F: Fn(&OutboxRecord) -> Option<R::Key>,
     {
+        // Completeness is derived from the count rather than from an over-read. Asking for one
+        // record more than the limit would also distinguish "there is more than I looked at" from
+        // "I looked at exactly all of it", and it was the first approach here — but it makes the
+        // question local to this batch, and `pending_count` answers it for the whole scope at the
+        // cost of a call the store already has to be able to serve.
         let total = outbox.pending_count().await?;
-        // One over the limit, so that "there is more than I looked at" is distinguishable from
-        // "I looked at exactly all of it".
         let records = outbox.pending_batch(self.conflict_scan).await?;
         let complete = total <= self.conflict_scan && records.len() == total;
 
+        // A `Vec` with a linear `find`, deliberately. A map would need `R::Key: Hash`, which is a
+        // bound on the *application's* key type that nothing else here asks for — and the scan it
+        // would save is bounded by `conflict_scan`, not by the queue, so the worst case is
+        // quadratic in a number the caller chose. The `Vec` also preserves first-appearance order,
+        // which the report hands to a UI as-is.
         let mut attributed: Vec<(R::Key, usize)> = Vec::new();
         let mut unattributed = 0;
         for record in &records {

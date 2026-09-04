@@ -1,0 +1,31 @@
+[package]
+name = "todo-server"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.88"
+description = "The axum/sqlx server half of the D4a offline todo trial"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# **This crate deliberately does not depend on `frontbox`.**
+#
+# It would be one line to import `MutationBatchRequest` and deserialize it directly, and it would
+# make the trial worthless: a server sharing the client's types cannot disagree with them, so the
+# end-to-end run would prove serde round-trips rather than that the wire format is implementable.
+#
+# The shapes in `examples/todo-server/src/wire.rs` are written from the spec instead
+# (`raw/initial/2026-08-25T083750Z/sources/08-offline-sync.spec.md`, and
+# `wiki/decisions/010-batch-wire-format.decision.md`). The integration test is the oracle: if the
+# two ends disagree by one field name, the sync fails.
+[dependencies]
+axum = "0.8"
+# The cross-service reference check (D4d). A fixture rather than a recommendation — see
+# `examples/todo-server/src/users.rs`.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
+tower-http = { version = "0.6", features = ["cors"] }
+utoipa = "5.5.0"
+utoipa-swagger-ui = { version = "9.0.2", features = ["axum", "vendored"] }

@@ -105,6 +105,35 @@ unit, half-persistence remains prohibited, and the argument for durability is un
 identity persisted without its staleness flag fails in exactly the way described above. What changes
 is the type of one field and the fate of `VersionUpdate::NeedsReset`, which decision 021 carries.
 
+## Built Durably 2026-08-30, And The Fourth State It Exposed
+
+**This decision had one implementation for four days longer than the roadmap said it did.**
+`InMemoryVersionStore` was the only `CacheVersionStore` until D5's cache half landed; SQLite and
+IndexedDB now have one each, and `frontbox_cache_tests` runs on all three.
+
+Both durable backends honour the atomicity this page requires the same way, for the same reason. In
+SQLite, `version` and `stale` are two columns of one row, so a single `UPSERT` inside an `IMMEDIATE`
+transaction writes both or neither. In IndexedDB they are two fields of one record, written by one
+`put` inside one transaction. Neither could tear the pair without going out of its way to.
+
+**Writing the second implementation exposed a state neither this page nor the type could express.**
+`EntityState` is `#[non_exhaustive]` with three constructors, covering `(None, false)`,
+`(Some, true)` and `(Some, false)`. The fourth — **stale with no version** — had no constructor, so
+a backend outside the crate reading a null version had to answer `unknown()` and drop the staleness
+on the floor.
+
+That is this page's own failure mode, reached from the other direction. This decision exists because
+persisting `version` without `stale` leaves a client believing invalidated data is fresh; a backend
+that cannot *reconstruct* `stale` without a version does the same thing, on the entity set
+`InvalidationRunner::mark_all_stale` touches — which is every registered entity no invalidation has
+ever named, on a client that has just installed and just hit an error. The pair being one unit on
+disk is not enough if the type cannot carry one of its four values back.
+
+`EntityState::from_parts` closes it and case 67 holds it closed, asserting both that the staleness
+survives a reopen and that the entity still appears in `all_states` — because `stale()` walks the
+enumeration, and a backend that filtered null versions out of it would pass a state-by-name check
+and still never refetch.
+
 ## Revisit If
 
 An application appears whose entity data is cheap enough to refetch that durable freshness tracking

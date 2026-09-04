@@ -2,3 +2,10 @@
 **/*.rs.bk
 .coverage/
 .DS_Store
+# Browser console dumps from the Playwright MCP driver. Generated per run, thousands of lines
+# each, and evidence for exactly one session — curated excerpts belong in `raw/` with a manifest,
+# not in the worktree as uncurated output.
+.playwright-mcp/
+# The e2e run's final screenshot (`examples/todo-app/e2e/ui.mjs`, `SCREENSHOT`). Regenerated on
+# every run, so a committed copy is only ever a picture of some earlier run.
+e2e-final.png

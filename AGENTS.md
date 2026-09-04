@@ -10,14 +10,34 @@ cache invalidation.
 It is being extracted from RepForge's Dioxus application into a framework-neutral core with
 framework and storage adapters. The core deliberately carries no Dioxus dependency.
 
-**Current stage: D1 implemented 2026-08-26, D2 implemented 2026-08-27; D3 onward still planning.**
-The crate exists at the repository root as a single package with modules matching the eventual crate
-split. Design lives in `wiki/` as specs, proposals, and decisions.
+**Current stage: D1 through D5 and D4d are built.** D1 2026-08-26, D2 2026-08-27, D3a/D3b/D4a
+2026-08-29, D4b/D4c/D5 2026-08-30, **D4d 2026-08-31** — and D5's last owed proof line was met the
+same day: the two-realm drain is observed by a browser fixture rather than argued from a
+single-realm test. Every deliverable with a plan is built and none is carrying an unwitnessed
+promise. **D6** has no plan.
 
-Do not begin work on a later deliverable — D3 the Dioxus adapter, D4 the migration trial, D5 the
-durable backends — without an explicit go-ahead from the user.
+The repository is a Cargo workspace: the root package is `frontbox`, plus `crates/frontbox-dioxus`,
+`crates/frontbox-sqlite`, `crates/frontbox-indexeddb`, and the four trial crates
+`examples/todo-core`, `examples/todo-server`, `examples/user-server`, `examples/todo-app`. `src/`
+deliberately did not move into `crates/`, because the wiki cites `src/<file>.rs:<line>` in hundreds
+of places. Design lives in `wiki/` as specs, proposals, and decisions.
 
-Maintenance of what D1 and D2 already ship does not need one.
+Do not begin work on a later deliverable — D6, or anything else the roadmap has not marked built —
+without an explicit go-ahead from the user.
+
+Maintenance of what is already built does not need one. **Keep this paragraph and the roadmap's
+Sequencing Principle in step with the roadmap's per-deliverable Status lines**: this one named D4b
+and D5 as unauthorized for two days after both shipped, which meant the gate was blocking work
+already done and the schema was misdescribing its own project.
+
+**`examples/todo-server` must not depend on `frontbox`.** It hand-writes the wire shapes from the
+spec, which is what makes the trial's observation and regression tests a wire-format oracle rather
+than a serde round-trip. Importing the client's types would be one line and would delete the
+evidence.
+
+**`examples/todo-core` must not depend on Dioxus or `frontbox-dioxus`.** It is the
+framework-neutral application half of the trial. If the application logic needs the adapter, the
+adapter is leaking and the trial stops proving the boundary.
 
 **Maintenance** — go ahead:
 
@@ -48,6 +68,12 @@ making it.
   and a test written to move that number would be asserting the compiler works.
 
 `./scripts/verify.sh` runs every gate the roadmap requires. Run it before claiming anything works.
+
+**Every gate names the package it means.** A bare `cargo clippy`, `cargo test`, or `cargo llvm-cov`
+in a workspace silently changes which crates it covers, so a new gate must say `-p frontbox` or
+`-p frontbox-dioxus`. The coverage floor is on `-p frontbox` alone: the conformance suite cannot
+reach the adapter, and averaging one number across both would let a regression in either hide
+behind the other.
 
 ## Agent Role
 

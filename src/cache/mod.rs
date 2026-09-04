@@ -90,6 +90,33 @@ impl EntityState {
             stale: false,
         }
     }
+
+    /// Rebuild a state from what a store has on disk.
+    ///
+    /// # Why this exists, and why the three named constructors are not enough
+    ///
+    /// This type is `#[non_exhaustive]`, so a backend outside this crate cannot write the struct
+    /// literal. The three constructors above cover *three* of the four combinations —
+    /// [`unknown`](Self::unknown) is `(None, false)`, [`stale_at`](Self::stale_at) is
+    /// `(Some, true)`, [`fresh_at`](Self::fresh_at) is `(Some, false)`. The fourth, **stale with no
+    /// version**, had no constructor at all.
+    ///
+    /// It is not a corner. [`InvalidationRunner::mark_all_stale`] flags every entity the registry
+    /// models, including ones no invalidation has ever named — and for those, `state()` reads back
+    /// `unknown()`, so the write is `(None, true)`. That is the error-recovery hammer applied to a
+    /// client that has just installed, which is the *most* likely time to reach for it.
+    /// [`StaleEntity::version`](crate::cache::StaleEntity::version) already documented the state as
+    /// legitimate; nothing outside this crate could reconstruct it.
+    ///
+    /// Found by writing D5's second version store rather than by reading the type, which is the
+    /// same way [`QuarantinedRecord::from_raw`](crate::QuarantinedRecord::from_raw) was found: a
+    /// `#[non_exhaustive]` record is only as reconstructible as its constructors, and the in-tree
+    /// backend never noticed because it builds the literal directly.
+    ///
+    /// [`InvalidationRunner::mark_all_stale`]: crate::cache::InvalidationRunner::mark_all_stale
+    pub fn from_parts(version: Option<CacheVersion>, stale: bool) -> Self {
+        Self { version, stale }
+    }
 }
 
 /// A server's notice that one entity changed.

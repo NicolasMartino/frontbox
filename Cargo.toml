@@ -1,8 +1,24 @@
+# The root package is also the workspace root. `src/` deliberately does not move into
+# `crates/`: the wiki cites `src/<file>.rs:<line>` in hundreds of places and those citations are
+# load-bearing. The trial crates are workspace members deliberately: the verification script names
+# each package gate explicitly, so examples cannot drift out of the checked graph by accident.
+[workspace]
+members = [
+    "crates/frontbox-dioxus",
+    "crates/frontbox-indexeddb",
+    "crates/frontbox-sqlite",
+    "examples/todo-app",
+    "examples/todo-core",
+    "examples/todo-server",
+    "examples/user-server",
+]
+resolver = "2"
+
 [package]
 name = "frontbox"
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.85"           # AFIT needs 1.75; the conformance suite uses `Waker::noop`
+rust-version = "1.88"           # The locked dependency graph currently requires Rust 1.88.
 description = "Offline-first cache and mutation outbox for Rust frontends"
 repository = "https://github.com/nicolasmartino/frontbox"
 license = "MIT OR Apache-2.0"

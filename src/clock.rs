@@ -32,7 +32,9 @@ impl<T: Clock + ?Sized> Clock for std::rc::Rc<T> {
 ///
 /// Not available on `wasm32-unknown-unknown`, where `std::time::SystemTime::now` has no
 /// implementation. Web callers supply a clock over `Date.now()` through their adapter, which keeps
-/// the JavaScript glue out of core.
+/// the JavaScript glue out of core — `frontbox_dioxus::WebClock` behind that crate's `web` feature
+/// is the one this repository ships. Named in prose rather than linked: core does not depend on an
+/// adapter, and it is a `Clock` implementation like any other, not a blessed one.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SystemClock;
