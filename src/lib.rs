@@ -37,6 +37,21 @@
 //! Records are `#[non_exhaustive]` and constructor-built, so fields can be added without a breaking
 //! change.
 //!
+//! **The traits carry no such promise, and [`OutboxStore`] has already used it.** Queued-write
+//! coalescing added two *required* methods, [`OutboxStore::enqueue_coalescing`] and
+//! [`OutboxStore::read_for_send`], which is a breaking change for any backend implemented outside
+//! this workspace. They are required rather than defaulted deliberately: a default that appended
+//! instead of replacing would make an unported backend silently opt out of the feature, and a
+//! default for `read_for_send` that fell back to `pending_batch` would silently skip the durable
+//! mark the feature's safety rests on — the failure mode being a queued body rewritten under an
+//! identifier the server already holds. A compile error is the cheaper way to find out.
+//!
+//! The crate is `publish = false` and has no external implementors today, so the cost was nil. If
+//! that changes, the rule to expect is that adding a required method to a storage trait is a major
+//! version and adding a defaulted one is not — the same reading
+//! [`SyncTransport::offline_now`] was designed for, whose
+//! `Ok(false)` default gives an unported transport today's behaviour rather than an unsafe one.
+//!
 //! ## Features
 //!
 //! - `v4` *(default)* — [`MutationId::new`] for callers with no identifier of their own. It pulls
@@ -141,6 +156,7 @@ pub mod testing;
 pub use cache::{
     CacheVersion, CacheVersionStore, ClassifiedConflict, EntityState, InvalidationEvent,
     InvalidationReport, InvalidationRunner, PendingConflict, StaleEntity, VersionUpdate,
+    DEFAULT_CONFLICT_SCAN,
 };
 pub use clock::Clock;
 #[cfg(not(target_arch = "wasm32"))]
@@ -165,6 +181,7 @@ pub use runner::{
 };
 pub use scope::ScopeKey;
 pub use store::{
-    DeadLetterStore, Disposition, DrainLease, OutboxStore, Outcome, QuarantineStore, RowStore,
+    CoalescingEnqueue, CoalescingPolicy, CoalescingRefusal, DeadLetterStore, Disposition,
+    DrainLease, OutboxStore, Outcome, QuarantineStore, RowStore,
 };
 pub use transport::SyncTransport;

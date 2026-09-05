@@ -26,12 +26,29 @@ pub(crate) struct RawRow {
     pub row: Option<RowRef>,
     pub attempts: u32,
     pub last_error: Option<String>,
+    /// Whether the server may already hold this row's identifier.
+    ///
+    /// Set by `read_for_send`, and by `apply_outcomes` applying a `Retain`. `NULL` in storage means
+    /// "written before this column existed" and reads as `true` — see `crate::schema::migrate` for
+    /// why the conservative value is the one absence implies.
+    pub transport_started: bool,
 }
 
 /// Columns the outbox `SELECT`s share, so the reader and the query cannot drift apart.
 pub(crate) const OUTBOX_COLUMNS: &str = "seq, mutation_id, method, path, raw_body, created_at, \
-     op_name, op_version, traceparent, precondition, row_entity, row_id, attempts, last_error";
+     op_name, op_version, traceparent, precondition, row_entity, row_id, attempts, last_error, \
+     transport_started";
 
+/// Read one outbox row as stored, without deciding whether it decodes.
+///
+/// `seq` and `attempts` are cast from `i64` rather than `try_from`'d, and neither can be negative in
+/// a database this crate wrote: `seq` is `INTEGER PRIMARY KEY AUTOINCREMENT`, which SQLite issues
+/// only as increasing positives, and `attempts` is written solely as `0` at insert and `attempts + 1`
+/// on a verdict. A negative means the file was edited by something else, and the home for that is
+/// `decode` rather than here — erroring on a read lets one tampered row wedge a healthy queue, which
+/// `wiki/decisions/006-corrupt-record-policy.decision.md` exists to refuse. Should this crate ever
+/// write a negative itself, carry `seq` as `i64` and fail in `decode`, so the row is skipped on reads
+/// and surfaced by `sweep_corrupt` like any other unusable row.
 pub(crate) fn read_raw(row: &Row<'_>) -> rusqlite::Result<RawRow> {
     let op_name: Option<String> = row.get(6)?;
     let op_version: Option<String> = row.get(7)?;
@@ -61,7 +78,85 @@ pub(crate) fn read_raw(row: &Row<'_>) -> rusqlite::Result<RawRow> {
         },
         attempts: row.get::<_, i64>(12)? as u32,
         last_error: row.get(13)?,
+        // Absent means the row predates the column, and the only safe reading of "we do not know
+        // whether this was sent" is that it was.
+        transport_started: row.get::<_, Option<i64>>(14)?.is_none_or(|flag| flag != 0),
     })
+}
+
+/// Insert one intent into `scope`'s queue, on a connection or an open transaction.
+///
+/// Shared by `enqueue` and by the appending half of `enqueue_coalescing`, which cannot call
+/// `enqueue` because it is already inside a transaction and would deadlock on the connection borrow.
+/// One writer rather than two, so the column list cannot drift between them.
+pub(crate) fn insert_intent(
+    connection: &rusqlite::Connection,
+    scope: &ScopeKey,
+    intent: &MutationIntent,
+) -> Result<(), frontbox::Error> {
+    let body = body_text(&intent.body)?;
+    let (op_name, op_version) = match &intent.op {
+        Some(op) => (Some(op.name.clone()), op.version.clone()),
+        None => (None, None),
+    };
+    let (row_entity, row_id) = match &intent.row {
+        Some(row) => (Some(row.entity.clone()), Some(row.row_id.clone())),
+        None => (None, None),
+    };
+
+    // `seq` comes from `AUTOINCREMENT` inside this insert, which is what decision 016 requires: the
+    // store issues the order key, the caller cannot forge one, and two concurrent enqueues cannot
+    // read the same next value because SQLite assigns it under the row lock.
+    connection
+        .execute(
+            "INSERT INTO outbox (scope, mutation_id, method, path, raw_body, created_at, \
+             op_name, op_version, traceparent, precondition, row_entity, row_id, attempts, \
+             transport_started) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, 0)",
+            rusqlite::params![
+                scope.as_str(),
+                intent.mutation_id.to_string(),
+                intent.method,
+                intent.path,
+                body,
+                intent.created_at,
+                op_name,
+                op_version,
+                intent.traceparent,
+                intent.precondition,
+                row_entity,
+                row_id,
+            ],
+        )
+        .map_err(crate::backend::storage)?;
+    Ok(())
+}
+
+/// One window of outbox rows in `scope` after `after_seq`, in replay order, still undecoded.
+///
+/// Free-standing so it can run on an open transaction as well as on a borrowed connection: the
+/// paging argument on `SqliteStore::raw_page` applies identically to a read that also writes.
+pub(crate) fn raw_page_on(
+    connection: &rusqlite::Connection,
+    scope: &ScopeKey,
+    after_seq: i64,
+    window: usize,
+) -> Result<Vec<RawRow>, frontbox::Error> {
+    let sql = format!(
+        "SELECT {OUTBOX_COLUMNS} FROM outbox WHERE scope = ?1 AND seq > ?2 ORDER BY seq LIMIT ?3"
+    );
+    let mut statement = connection.prepare(&sql).map_err(crate::backend::storage)?;
+    // Bound to a local before returning: the row iterator borrows `statement`, so building the
+    // `Vec` inside this scope is what keeps the borrow shorter than the statement.
+    let page = statement
+        .query_map(
+            rusqlite::params![scope.as_str(), after_seq, window as i64],
+            read_raw,
+        )
+        .map_err(crate::backend::storage)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::backend::storage);
+    page
 }
 
 /// Build the record a caller sees, or say why the row is unusable.

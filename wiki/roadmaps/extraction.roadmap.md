@@ -27,7 +27,15 @@ authority, and this paragraph defers to them.
 
 As of 2026-08-31: D0 through D5 are built, **D5's last owed proof line was met the same day** — the
 two-realm drain is observed rather than argued — and **D4d is built too**. D6 has no plan. Every
-deliverable with a plan is now built, and none is carrying an unwitnessed promise. The crate is the root package of a workspace whose other members
+*deliverable* with a plan is now built, and none is carrying an unwitnessed promise.
+
+That sentence is about this sequence, and one plan sits outside it:
+`wiki/plans/queued-write-coalescing.plan.md` answers RepForge's 2026-09-05 coalescing request rather
+than a roadmap step. It was authorized and **built the same day** (decision 044), and it gains no
+deliverable number here — an external request is not a deliverable, and numbering it would put work
+into the sequence that the sequence's own gates were never written to cover.
+
+The crate is the root package of a workspace whose other members
 are `crates/frontbox-dioxus`, `crates/frontbox-sqlite`, `crates/frontbox-indexeddb` and the four
 trial crates under `examples/`; `src/` deliberately did not move.
 

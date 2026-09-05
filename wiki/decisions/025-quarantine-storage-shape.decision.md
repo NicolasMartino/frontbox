@@ -5,7 +5,7 @@ Status: Accepted 2026-08-29; case 50 landed the same day; discharged by both bac
 Date: 2026-08-29
 Category: Storage Contract
 Scope: Whether a durable backend stores quarantined rows in a separate table or as a state in the outbox, and which properties core requires either way.
-Sources: `src/store.rs`, `src/record/mod.rs`, `src/memory/outbox.rs`, `wiki/decisions/006-corrupt-record-policy.decision.md`
+Sources: `src/store/mod.rs`, `src/record/mod.rs`, `src/memory/outbox.rs`, `wiki/decisions/006-corrupt-record-policy.decision.md`
 Related: `wiki/decisions/006-corrupt-record-policy.decision.md`, `wiki/decisions/003-atomic-outcome-application.decision.md`, `wiki/decisions/024-scope-storage-encoding.decision.md`, `wiki/references/open-decisions.reference.md`, `wiki/roadmaps/extraction.roadmap.md`
 
 ## Decision

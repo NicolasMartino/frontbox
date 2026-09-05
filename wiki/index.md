@@ -14,8 +14,10 @@ application and into a reusable library.
 
 - **Current stage:** D1 through D5 are built — D1 2026-08-26, D2 2026-08-27, D3a/D3b/D4a
   2026-08-29, D4b/D4c/D5 2026-08-30, **D4d 2026-08-31** — and **D5's last owed proof line was met
-  the same day**: the two-realm drain is observed by a browser fixture. Every deliverable with a
-  plan is built and none is carrying an unwitnessed promise. **D6** has no plan. The crate is the root package of
+  the same day**: the two-realm drain is observed by a browser fixture. Every *deliverable* with a
+  plan is built and none is carrying an unwitnessed promise. **D6** has no plan.
+  `plans/queued-write-coalescing.plan.md` sits outside the D0-D6 sequence — it answers an external
+  request rather than a roadmap step — and was **built 2026-09-05**. The crate is the root package of
   a workspace whose other members are `crates/frontbox-dioxus`, `crates/frontbox-sqlite`,
   `crates/frontbox-indexeddb` and the four trial crates under `examples/`; design continues to live
   in this wiki.
@@ -55,7 +57,7 @@ argued and tested rather than assumed. Divergences from the source carry that ob
 | [proposals/offline-todo-trial.proposal.md](proposals/offline-todo-trial.proposal.md) | **Accepted**; D4a built | The requested Dioxus todo plus axum/sqlx server, split into an API proof that runs today and a durability proof that follows D5 — because an in-memory queue cannot demonstrate the one adjective the demo exists to prove. |
 | [proposals/invalidation-delivery.proposal.md](proposals/invalidation-delivery.proposal.md) | Proposed | Why "SSE is out of scope" defended the wrong boundary, the outbound/inbound asymmetry, level-triggered polling before edge-triggered streams, and who owns the resume cursor. |
 | [proposals/browser-background-services.proposal.md](proposals/browser-background-services.proposal.md) | Proposed | Whether frontbox uses Background Sync, Background Fetch, or the bfcache. Fetch is the wrong tool, Sync is downstream of D5, and the question surfaced that single-flight holds per runner rather than per scope. |
-| [proposals/queued-write-coalescing.proposal.md](proposals/queued-write-coalescing.proposal.md) | Proposed | RepForge's opt-in same-row queued-write coalescing request, accepted in direction but corrected around durable "transport started" knowledge rather than `attempts == 0`. |
+| [proposals/queued-write-coalescing.proposal.md](proposals/queued-write-coalescing.proposal.md) | **Accepted**; 044 built | RepForge's opt-in same-row queued-write coalescing request, accepted in direction but corrected three times over: `attempts == 0` is not "never sent", `Error::Offline` cannot prove a request never left, and replacement must discard the queued body loudly rather than drop an unbound write in silence. |
 | [roadmaps/extraction.roadmap.md](roadmaps/extraction.roadmap.md) | Active | Deliverable sequence D0, D0a, D1-D6 with proof gates, keeping the prior-art survey before implementation and the migration trial before backend ports. |
 | [plans/d1-core-cache-runtime.plan.md](plans/d1-core-cache-runtime.plan.md) | Completed | The first core outbox runtime slice: shapes, conformance cases, and what implementation changed. Built 2026-08-26. |
 | [plans/d2-cache-invalidation.plan.md](plans/d2-cache-invalidation.plan.md) | Completed | The second slice: generic entity keys, version reconciliation, invalidation handling, and the pending-write conflict signal. Built 2026-08-27. |
@@ -64,7 +66,7 @@ argued and tested rather than assumed. Divergences from the source carry that ob
 | [plans/d4c-multi-platform-trial.plan.md](plans/d4c-multi-platform-trial.plan.md) | Completed | The trial application on web, macOS desktop, iOS and Android from one component tree: what the platform seam turned out to contain, the four CSS changes mobile actually needed, and the drain loop dying on Dioxus desktop. Neither library crate was touched. Built 2026-08-30. |
 | [plans/d4d-multi-domain-trial.plan.md](plans/d4d-multi-domain-trial.plan.md) | **Built**; amended 2026-09-02 | A second domain server so cross-service ordering and multi-source invalidation stop being untested guarantees, plus the first application code that ever runs the invalidation runtime. Fourteen observations; the fourteenth came out of a review and unlocked a branch the fixture's own outage switch had made unreachable. |
 | [plans/d5-persistence-backends.plan.md](plans/d5-persistence-backends.plan.md) | **Completed**; last proof line met 2026-08-31 | The execution plan for durable SQLite and IndexedDB storage: both backends together, the obligations core already placed on them, the application's own read-model store, and the four decisions owed before the first durable row. |
-| [plans/queued-write-coalescing.plan.md](plans/queued-write-coalescing.plan.md) | Draft | The safe implementation plan for RepForge's same-row queued-write coalescing request: public outcome types, store-level send claims, conservative durable migrations, and cross-backend conformance. |
+| [plans/queued-write-coalescing.plan.md](plans/queued-write-coalescing.plan.md) | Completed | The safe implementation plan for RepForge's same-row queued-write coalescing request: one durable `transport_started` fact written before the send, an offline probe on `SyncTransport`, SQLite's first schema-versioning mechanism, and cross-backend conformance. Outside the D0-D6 sequence. |
 | [plans/prior-art-survey.plan.md](plans/prior-art-survey.plan.md) | Completed | Executed D0a: compared frontbox against offline/local-first prior art before implementation is authorized. |
 | [references/prior-art-survey.reference.md](references/prior-art-survey.reference.md) | Sourced | D0a prior-art comparison across two cohorts: state-replication engines (Replicache/Zero, PowerSync, Electric, RxDB, WatermelonDB, PouchDB/CouchDB, Automerge, Yjs) and the HTTP command-queue peers frontbox actually belongs to (Workbox, Redux Offline, TanStack Query, Amplify DataStore). URLs verified 2026-08-26. |
 | [references/repforge-cache-source-corpus.reference.md](references/repforge-cache-source-corpus.reference.md) | Sourced | Inventory of copied RepForge source files, line counts, scope notes, and extraction value. |
@@ -119,6 +121,8 @@ argued and tested rather than assumed. Divergences from the source carry that ob
 | [decisions/041-the-poll-stops-when-nobody-is-looking.decision.md](decisions/041-the-poll-stops-when-nobody-is-looking.decision.md) | **Accepted** 2026-09-01 | The invalidation poll pauses outright when the window is not in front and resumes on the wake; the drain loop does not, because those writes are already the user's. `focus` as well as `visibilitychange`, because two side-by-side windows are both visible. |
 | [decisions/042-events-are-toasts-conditions-are-the-status-bar.decision.md](decisions/042-events-are-toasts-conditions-are-the-status-bar.decision.md) | **Accepted** 2026-09-01 | One rule by duration replaces three message surfaces with no rule between them. What happened is a toast; what is still true is on the status bar — including a service that has been unreachable for an hour, which a toast would let expire into silence. |
 | [decisions/043-in-front-on-every-platform.decision.md](decisions/043-in-front-on-every-platform.decision.md) | **Accepted** 2026-09-01; re-verified and amended 2026-09-02 | The adapter gains a `native` feature and `use_lifecycle_wake`: one wry event handler serves desktop, iOS and Android. Verified on real OS transitions on both phones. Desktop is wired and inert — `dioxus-desktop` filters the window event out before a handler sees it, measured. The amendment records the web arm defaulting "cannot tell" the wrong way, against its own comment stated three times. |
+| [decisions/044-transport-started-before-the-request.decision.md](decisions/044-transport-started-before-the-request.decision.md) | Accepted; amended twice after review | A queued body may be replaced only while a durable `transport_started` is false, and that fact is written before the request exists rather than inferred from how the request failed. Two writers set it — `read_for_send`, and `apply_outcomes` on a `Retain` — because a verdict cannot exist without a request. |
+| [compatibility/cache-versions-are-optional.compat.md](compatibility/cache-versions-are-optional.compat.md) | Accepted | Cache versions are optional and always were; when a plain periodic re-read is the better answer, and the one thing skipping them costs — the pending-write conflict report that stops a refetch clobbering unsent edits. |
 | [compatibility/dioxus-adapter.compat.md](compatibility/dioxus-adapter.compat.md) | Active | What `frontbox-dioxus` commits to, and the first `0.x` crate in any frontbox public surface. Core's dependency claim survives, and a gate now proves it. |
 | [compatibility/indexeddb-adapter.compat.md](compatibility/indexeddb-adapter.compat.md) | Active | What the IndexedDB adapter can say about a stored object that does not match its row type, per store. The outbox quarantines it; the terminal stores drop it, which is a trait shape and register entry 25 rather than an oversight. |
 | [compatibility/public-dependencies.compat.md](compatibility/public-dependencies.compat.md) | Active | Which crates appear in the public API and therefore in the semver contract — `serde_json`, `uuid`, `serde` — and which server payload the wire format targets. |
@@ -146,12 +150,22 @@ argued and tested rather than assumed. Divergences from the source carry that ob
   `frontbox` or `frontbox-dioxus`. One finding is open and not fixed — the drain loop stops being
   polled on Dioxus desktop; see register entry 20 and
   `plans/d4c-multi-platform-trial.plan.md`. Web, iOS and Android are unaffected.
-- **RepForge raised same-row queued-write coalescing on 2026-09-05.** The product need is accepted:
-  two offline profile edits should leave one queued send carrying the latest body and the original
-  precondition. The first proposed safety rule is not accepted: `attempts == 0` is not "never
-  sent". The proposed frontbox answer is a store-level coalescing API backed by durable
-  `transport_started` knowledge; see `proposals/queued-write-coalescing.proposal.md` and
-  `plans/queued-write-coalescing.plan.md`.
+- ~~**RepForge raised same-row queued-write coalescing on 2026-09-05.**~~ **Built the same day** on
+  all three backends, adopted by the trial, and closed by decision 044. The product need was accepted
+  as stated — two offline profile edits should leave one queued send carrying the latest body and the
+  original precondition — and RepForge's safety rule was not: `attempts == 0` is not "never sent",
+  because `attempts` counts verdicts received. What shipped is a store-level coalescing API gated on
+  one durable `transport_started` fact **written before the request is built**, plus
+  `SyncTransport::offline_now` so an offline application does not burn its own coalescibility.
+  Deriving that fact from how a send *failed* was tried and dropped: `Error::Offline` covers a browser
+  `fetch` that fails for lack of connectivity, indistinguishable from a request the server received
+  and answered into a lost response.
+
+  Two reviews followed. The first found a real bypass — `apply_outcomes` applying a `Retain` reaches
+  the same state without ever calling `read_for_send` — closed by case 80 and a second writer of the
+  mark. The second found no defect but a contract still describing the pre-fix rule, plus two runner
+  paths the plan had asked for and nobody had written: cases 81 and 82. Conformance covers 70-82; the
+  plan sat outside the D0-D6 sequence throughout.
 - The public-dependency note now exists at `compatibility/public-dependencies.compat.md`, which
   discharges two of decision 010's three release obligations. Outstanding: a changelog entry the
   first time a public major moves, and naming a *checkable* server-contract version in place of
@@ -278,7 +292,7 @@ argued and tested rather than assumed. Divergences from the source carry that ob
   plan's Ordering Policy and the unit tests in `src/id.rs`.
 - Decide whether a cross-scope diagnostic is needed to surface work retained under a scope no store
   currently opens. D1's no-progress signal cannot see it (decision 009).
-- Create `wiki/apis/` and `wiki/compatibility/` entries once public APIs exist.
+- Create `wiki/apis/` entries once public APIs exist. `wiki/compatibility/` now has four.
 
 ## Crate
 

@@ -18,7 +18,7 @@
 //! test, and it is sufficient for the property under test: Web Locks are managed **per origin**,
 //! shared across every agent on it, and a dedicated worker is a separate agent with its own global
 //! scope, its own event loop, and no view of this page's memory. That is precisely the isolation
-//! two tabs have and core cannot bridge (`src/store.rs`, `claim_drain`).
+//! two tabs have and core cannot bridge (`src/store/mod.rs`, `claim_drain`).
 //!
 //! What a worker does *not* reproduce is a second **wasm instance**: the worker here is plain
 //! JavaScript, so it exercises the lock manager rather than a second copy of frontbox. The two

@@ -135,6 +135,12 @@ Every crate below is built. `src/` stays at the repository root because the wiki
 - `frontbox` (root package): mutation protocol types, sync runner and drain loop,
   outbox/dead-letter/quarantine traits, cache versioning, invalidation model, and core errors.
   Eventually `frontbox-core`.
+
+  **Cache versioning is optional.** `CacheVersionStore` is a separate trait on a separate type with
+  its own conformance suite; the outbox and the sync runtime are complete without it, and a plain
+  periodic re-read is a legitimate invalidation strategy rather than a shortcut. See
+  [when versions earn their keep](wiki/compatibility/cache-versions-are-optional.compat.md), which
+  also covers the one thing skipping them costs.
 - `crates/frontbox-dioxus`: **built**. Context provider, store counts and invalidation as signals,
   and the sync cadence. The loop itself is core's, because it needs no framework and the
   conformance suite cannot reach an adapter.

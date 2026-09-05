@@ -3,9 +3,9 @@
 use std::collections::HashSet;
 
 use frontbox::{
-    truncate_error, DeadLetterRecord, DeadLetterStore, Disposition, Error, MutationId,
-    MutationIntent, OutboxRecord, OutboxStore, Outcome, QuarantineStore, QuarantinedRecord,
-    ScopeKey,
+    truncate_error, CoalescingEnqueue, CoalescingPolicy, DeadLetterRecord, DeadLetterStore,
+    Disposition, Error, MutationId, MutationIntent, OutboxRecord, OutboxStore, Outcome,
+    QuarantineStore, QuarantinedRecord, ScopeKey,
 };
 use wasm_bindgen::JsValue;
 use web_sys::{IdbObjectStore, IdbTransactionMode};
@@ -63,6 +63,18 @@ impl OutboxStore for IdbStore {
             .collect();
         records.truncate(limit);
         Ok(records)
+    }
+
+    async fn enqueue_coalescing(
+        &self,
+        intent: MutationIntent,
+        policy: CoalescingPolicy,
+    ) -> Result<CoalescingEnqueue, Error> {
+        self.enqueue_coalescing_impl(intent, policy).await
+    }
+
+    async fn read_for_send(&self, limit: usize) -> Result<Vec<OutboxRecord>, Error> {
+        self.read_for_send_impl(limit).await
     }
 
     async fn pending_count(&self) -> Result<usize, Error> {
@@ -187,6 +199,10 @@ impl OutboxStore for IdbStore {
                     let mut updated = entry.row.clone();
                     updated.attempts = updated.attempts.saturating_add(1);
                     updated.last_error = reason.as_deref().map(truncate_error);
+                    // A `Retain` is a verdict, and a verdict cannot exist without a request. Set
+                    // here as well as in `read_for_send`, because `apply_outcomes` is public and a
+                    // direct caller may have done its own sending (conformance case 80).
+                    updated.transport_started = true;
                     // No explicit key: `seq` is the store's key path, so a `put` of the round-tripped
                     // value replaces the row in place.
                     await_request(outbox.put(&to_js(&updated)?).map_err(js_error)?).await?;

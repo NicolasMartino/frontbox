@@ -40,6 +40,10 @@ pub enum StoreOp {
     Enqueue,
     /// [`OutboxStore::pending_batch`](crate::store::OutboxStore::pending_batch)
     PendingBatch,
+    /// [`OutboxStore::read_for_send`](crate::store::OutboxStore::read_for_send)
+    ReadForSend,
+    /// [`OutboxStore::enqueue_coalescing`](crate::store::OutboxStore::enqueue_coalescing)
+    EnqueueCoalescing,
     /// [`OutboxStore::pending_count`](crate::store::OutboxStore::pending_count)
     PendingCount,
     /// [`OutboxStore::sweep_corrupt`](crate::store::OutboxStore::sweep_corrupt)
@@ -96,6 +100,13 @@ struct Row {
     attempts: u32,
     row: Option<RowRef>,
     last_error: Option<String>,
+    /// Whether the server may already hold this row's identifier.
+    ///
+    /// Set by `read_for_send` in the same borrow that returns the row, and by `apply_outcomes`
+    /// applying a `Retain` — a verdict cannot exist without a request. Never cleared. The only thing
+    /// that reads it is `enqueue_coalescing`, which refuses to rewrite a body once it is set
+    /// (`wiki/decisions/044-transport-started-before-the-request.decision.md`).
+    transport_started: bool,
 }
 
 #[derive(Default)]
@@ -227,6 +238,10 @@ impl InMemoryBackend {
             attempts: 0,
             row: None,
             last_error: None,
+            // A corrupt row is never coalescible anyway — it has no decodable row binding to match
+            // on — so this value is not load-bearing. `false` keeps it the same shape a fresh
+            // enqueue produces, rather than making corruption a second thing the flag can mean.
+            transport_started: false,
         });
     }
 

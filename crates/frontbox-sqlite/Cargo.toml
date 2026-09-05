@@ -24,3 +24,6 @@ testing = ["frontbox/testing"]
 [dev-dependencies]
 frontbox = { path = "../..", features = ["testing"] }
 pollster = "0.4"
+# The migration test builds a pre-migration database by hand and needs deterministic identifiers to
+# assert against; core's `v4` feature is not what a test wants here.
+uuid = { version = "1", default-features = false }

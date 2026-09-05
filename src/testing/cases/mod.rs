@@ -16,6 +16,9 @@
 //! comment refer to, so a case keeps its number even when it moves file.
 
 mod anomalies;
+mod coalescing;
+mod coalescing_matching;
+mod coalescing_runner;
 mod corruption;
 mod dead_letters;
 mod drain;
@@ -32,6 +35,9 @@ mod status;
 mod transport;
 
 pub use anomalies::*;
+pub use coalescing::*;
+pub use coalescing_matching::*;
+pub use coalescing_runner::*;
 pub use corruption::*;
 pub use dead_letters::*;
 pub use drain::*;

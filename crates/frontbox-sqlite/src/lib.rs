@@ -29,6 +29,7 @@
 #![deny(missing_docs)]
 
 mod backend;
+mod coalescing;
 mod convert;
 mod rows;
 mod schema;

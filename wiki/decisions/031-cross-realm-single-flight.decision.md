@@ -5,7 +5,7 @@ Status: Accepted 2026-08-30; in-realm half implemented as case 61; **cross-realm
 Date: 2026-08-30
 Category: Storage Contract
 Scope: What single-flight has to mean once a scope's queue outlives the object that drains it, why the current guard does not deliver it, and who is obliged to.
-Sources: `src/runner/mod.rs`, `src/memory/mod.rs`, `src/store.rs`, `examples/todo-core/src/app/mod.rs`
+Sources: `src/runner/mod.rs`, `src/memory/mod.rs`, `src/store/mod.rs`, `examples/todo-core/src/app/mod.rs`
 Related: `wiki/decisions/018-single-flight-drain-mode.decision.md`, `wiki/decisions/016-monotonic-enqueue-sequence.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/024-scope-storage-encoding.decision.md`, `wiki/decisions/025-quarantine-storage-shape.decision.md`, `wiki/proposals/browser-background-services.proposal.md`, `wiki/references/open-decisions.reference.md`, `wiki/roadmaps/extraction.roadmap.md`
 
 ## Decision

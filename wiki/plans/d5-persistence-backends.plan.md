@@ -5,7 +5,7 @@ Status: **Completed 2026-08-30**; the last owed proof line met 2026-08-31 — se
 Date: 2026-08-30
 Category: Storage
 Scope: The execution plan the roadmap records as "Not created yet" — two backend crates, the obligations core already placed on them, the application-side persistence D4b needs, and the decisions that must be settled before the first durable row is written.
-Sources: `src/store.rs`, `src/testing/mod.rs`, `src/testing/macros/mod.rs`, `src/memory/`, `examples/todo-core/src/`, `wiki/specs/source-frontend-cache-architecture.spec.md`
+Sources: `src/store/mod.rs`, `src/testing/mod.rs`, `src/testing/macros/mod.rs`, `src/memory/`, `examples/todo-core/src/`, `wiki/specs/source-frontend-cache-architecture.spec.md`
 Related: `wiki/roadmaps/extraction.roadmap.md`, `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/decisions/016-monotonic-enqueue-sequence.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/023-read-model-boundary.decision.md`, `wiki/decisions/024-scope-storage-encoding.decision.md`, `wiki/decisions/025-quarantine-storage-shape.decision.md`, `wiki/decisions/031-cross-realm-single-flight.decision.md`, `wiki/references/open-decisions.reference.md`, `wiki/proposals/extraction-boundary.proposal.md`
 
 ## Context

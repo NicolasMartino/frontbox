@@ -50,6 +50,14 @@
 /// `cache_versions.version` and `rows_store.version` stay nullable, which is a different thing
 /// entirely and is argued above: `NULL` and `''` are distinguishable values that decision 021
 /// needs to stay distinguishable.
+///
+/// `outbox.transport_started` is nullable for a third reason, and it does not weaken the rule. It
+/// carries no `DEFAULT`, so every writer still names it and a writer that forgets still fails. What
+/// `NULL` means is *"written before this column existed"*, and [`migrate`] cannot give those rows a
+/// value without an `UPDATE` over every user's queue — so the read supplies the conservative one
+/// (`true`, meaning "the transport may already have seen this"). A `NOT NULL DEFAULT 0` column
+/// would have been the opposite: it would have told every pre-existing row that it had never been
+/// sent, which is the one answer that permits an unsafe rewrite.
 pub const SCHEMA: &str = r#"
 PRAGMA journal_mode = WAL;
 PRAGMA foreign_keys = ON;
@@ -69,7 +77,8 @@ CREATE TABLE IF NOT EXISTS outbox (
     row_entity    TEXT,
     row_id        TEXT,
     attempts      INTEGER NOT NULL,
-    last_error    TEXT
+    last_error    TEXT,
+    transport_started INTEGER
 );
 CREATE INDEX IF NOT EXISTS outbox_scope_seq ON outbox (scope, seq);
 
@@ -124,3 +133,66 @@ CREATE TABLE IF NOT EXISTS cache_versions (
     PRIMARY KEY (scope, entity)
 );
 "#;
+
+/// The schema generation this build writes.
+///
+/// Stored in `PRAGMA user_version`, which SQLite keeps in the database header and never interprets.
+/// Version 1 is the first generation this crate has ever numbered: everything before it was a bare
+/// `CREATE TABLE IF NOT EXISTS` batch, which creates tables on a fresh database and silently does
+/// nothing to an existing one — so a column added to [`SCHEMA`] alone would never reach a database
+/// already on disk, and every statement naming it would fail.
+pub(crate) const SCHEMA_VERSION: i64 = 1;
+
+/// Bring an existing database up to [`SCHEMA_VERSION`].
+///
+/// Runs after [`SCHEMA`], which has already created anything missing wholesale.
+///
+/// # Why the column check rather than the version alone
+///
+/// A fresh database gets `transport_started` from [`SCHEMA`] and still reports `user_version = 0`,
+/// because nothing has stamped it yet. Driving the `ALTER` off the version alone would therefore
+/// try to add a column that is already there and fail on the very first open of a new database.
+/// `PRAGMA table_info` answers the question actually being asked — *does this column exist* — and
+/// makes the step idempotent whatever route the database took to get here. The version is still
+/// stamped, because the next migration will want a cheap answer that does not depend on inspecting
+/// every table.
+///
+/// # This migration writes no user data
+///
+/// One `ALTER TABLE ... ADD COLUMN`, which SQLite records in the header without rewriting rows. The
+/// pre-existing rows keep `NULL`, and the read maps that to the conservative value. Rewriting them
+/// would have meant an `UPDATE` across every queued mutation on every user's device to store a
+/// value the absence already implies.
+pub(crate) fn migrate(connection: &rusqlite::Connection) -> rusqlite::Result<()> {
+    if !has_column(connection, "outbox", "transport_started")? {
+        connection.execute_batch("ALTER TABLE outbox ADD COLUMN transport_started INTEGER")?;
+    }
+
+    // **Only ever forward.** An unconditional stamp would let an older binary opening a *newer*
+    // database write the marker backwards — and the next new-binary open would then re-run
+    // migrations it had already applied, against a schema that already has their effects. Two
+    // installed versions of one application is not exotic: a desktop build alongside a browser tab,
+    // or a rollback.
+    //
+    // Reading a future database is left possible rather than refused. This crate's migrations add
+    // columns, so a newer schema is a superset and every statement here still resolves; refusing
+    // would strand a user's queued work behind a version downgrade, which is the more expensive
+    // failure. A migration that ever *removed* or *retyped* a column would make that trade wrong
+    // and would need a version check on the read path, not just here.
+    let current: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    if current < SCHEMA_VERSION {
+        connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    }
+    Ok(())
+}
+
+/// Whether `table` has a column named `column`.
+fn has_column(
+    connection: &rusqlite::Connection,
+    table: &str,
+    column: &str,
+) -> rusqlite::Result<bool> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let mut names = statement.query_map([], |row| row.get::<_, String>(1))?;
+    names.try_fold(false, |found, name| Ok(found || name? == column))
+}

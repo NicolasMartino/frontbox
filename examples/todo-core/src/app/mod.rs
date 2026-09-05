@@ -12,6 +12,7 @@
 //! measures the cap instead of trusting this comment to.
 
 mod cache;
+mod coalescing;
 mod direct;
 mod identity;
 mod index;

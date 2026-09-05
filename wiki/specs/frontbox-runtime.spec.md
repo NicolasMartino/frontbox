@@ -89,6 +89,7 @@ caller has to honour.
 | Cache version and staleness persist as one unit | The version advances at invalidation, not at refetch, so only the staleness flag remembers a refetch is owed. Persisting the version alone makes a restart report an invalidated entity as fresh — worse than losing both, which fails safe | Case 39 |
 | Asking what is stale also reports what refetching would discard | Core does not perform the refetch, so it cannot gate one; a hard gate would also let a single permanently retained record freeze every entity's cache. Reporting the conflict at the moment staleness is read means an application must actively ignore it to clobber unsent work | Cases 41, 42, 43 |
 | A drain stops at the first pass that drains nothing, not when the queue empties | A fruitless pass leaves the queue unchanged, so the next pass sends the identical request. Repeating it also spends a retention bound in milliseconds — the bound counts verdicts received, and it is meant to give the server chances spread over time, not over one loop. Stopping on no progress also supplies the termination argument: a continuing pass strictly shortens the queue | Case 58 |
+| A queued body may be replaced only while the record is not marked `transport_started` | The eligibility fact is written ahead of the request rather than inferred from how the request failed. Neither `attempts == 0` nor `Error::Offline` can prove a record never reached the server, and a body rewritten under an identifier the server holds is deduped away and never applied (decision 044). Two writers set the mark, because there are two ways a record reaches the server: `read_for_send` marks what it hands to the transport, and `apply_outcomes` marks on a `Retain`, since a verdict cannot exist without a request | Cases 70-82 |
 | Reads skip undecodable rows; only `sweep_corrupt` surfaces them | Sweeping inside a read makes reads mutate storage; erroring on a read lets one bad row wedge a healthy queue. The window is bounded because the runner sweeps every pass | Case 15 |
 
 ## Verification
@@ -129,11 +130,57 @@ true.
 
 The conformance suite lives in the library behind a `testing` feature rather than in `tests/`, so
 the SQLite and IndexedDB backends run the identical cases through `StoreFactory`,
-`VersionStoreFactory`, and `FaultInjection`. They do: 68 cases green on all three backends, the
+`VersionStoreFactory`, and `FaultInjection`. They do: 80 cases green on all three backends, the
 browser ones under `wasm-bindgen-test` in headless Chrome. The three are separate traits on
 purpose: a backend that cannot yet do one of them does not implement it and does not invoke the
 matching macro, which leaves the gap visible in its test file rather than hidden behind a runtime
 skip.
+
+`frontbox_coalescing_tests!` is a sixth list, added 2026-09-05 with cases 70-82, and separate for
+the same reason: coalescing adds two *required* `OutboxStore` methods, so a backend that has not
+ported them says so by not invoking the macro rather than by failing forty unrelated cases. SQLite
+carries one case the shared suite cannot express — a database built by hand in the pre-migration
+shape, asserting that rows written before `transport_started` existed still send and refuse to be
+rewritten.
+
+**The count and the highest number are different numbers, and both are right.** Case numbering is
+global and stable, so a case keeps its number when it moves file; case 30 is blocking-only and case
+45 no longer exists. Eighty cases run on all three backends, numbered up to 82.
+
+## Queued-Write Coalescing
+
+Opt-in, row-bound, and off unless a caller asks for it. `OutboxStore::enqueue_coalescing` replaces
+one queued record's body in place, so two offline edits to one row leave one eventual send carrying
+the later body under the earlier record's identifier and precondition.
+
+What makes it safe is a durable `transport_started` written **inside the transaction that reads a
+batch for sending**, before the transport request exists, and never cleared. RepForge proposed
+`attempts == 0` as the eligibility test; that counts verdicts received, so a record can have been
+applied by the server and still read zero. The first frontbox answer inferred it from
+`Error::Offline` instead, which is the same mistake one layer out — `src/transport.rs` documents
+`Offline` as covering a browser `fetch` that failed for lack of connectivity, and such a `fetch`
+rejects identically whether the request never left or the server answered it into a lost response.
+Recording the fact before the request removes the inference and, with it, the `in_flight` flag, the
+release taxonomy, and the crash-recovery pass the earlier design needed (decision 044).
+
+`SyncTransport::offline_now` is asked before the runner reads anything, so an offline application
+does not spend its own coalescibility polling. Its default is `Ok(false)`: an adapter that ignores
+it gets no coalescing, never unsafe coalescing.
+
+The trial adopted it the same day: `examples/todo-core` carries `rename_coalescing` beside the plain
+`rename` so the difference is measurable, and `HttpTransport` implements `offline_now` from the
+offline switch it already had. Observations 15-17b measure the collapse against the real server —
+one recorded mutation instead of two, and both halves of why the probe exists. `RequireExisting` has
+no end-to-end witness, because the trial sends no preconditions and inventing a reason to would be
+arranging the fixture to flatter the feature.
+
+Two constraints reach the caller and are stated on the method, because core cannot check either.
+Replacement **discards** the queued body, so it is correct for a full-state `PUT` and wrong for a
+partial `PATCH` — and under `RequireExisting` the application cannot see the body it is discarding,
+which is the same not-knowing that stopped it computing a precondition. And `AppendIfMissing`
+**never refuses**: an intent with no row binding, no match, several matches, or an already-started
+match is queued, because returning `NotQueued` there would hand back an `Ok` for a silently dropped
+write.
 
 ## What D5 Had To Satisfy, And Did
 

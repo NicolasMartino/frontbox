@@ -5,7 +5,7 @@ Status: Accepted 2026-08-31; **proven by D4d the same day**, with one interactio
 Date: 2026-08-31
 Category: Protocol
 Scope: How a client whose writes span several backend services queues and drains them, which decision 034 explicitly left open.
-Sources: `src/runner/mod.rs`, `src/transport.rs`, `src/store.rs`
+Sources: `src/runner/mod.rs`, `src/transport.rs`, `src/store/mod.rs`
 Related: `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/decisions/016-monotonic-enqueue-sequence.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/018-single-flight-drain-mode.decision.md`, `wiki/decisions/019-verdict-synthesis.decision.md`, `wiki/decisions/034-no-service-origin-in-core.decision.md`, `wiki/decisions/036-no-sub-scope-partitions.decision.md`, `wiki/plans/d4d-multi-domain-trial.plan.md`
 
 ## Decision

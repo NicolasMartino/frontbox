@@ -29,6 +29,7 @@
 #![cfg(target_arch = "wasm32")]
 
 mod backend;
+mod coalescing;
 mod convert;
 mod locks;
 mod request;

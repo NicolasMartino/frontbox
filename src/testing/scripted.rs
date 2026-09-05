@@ -26,9 +26,13 @@ pub enum Reply {
     ///
     /// The only way to produce a verdict for a mutation that was never sent.
     Exact(Vec<MutationResult>),
-    /// No request could be attempted.
+    /// Answer a *called* `send_batch` with [`Error::Offline`].
+    ///
+    /// The batch has already been read and handed over by the time this is produced, so the records
+    /// in it are transport-started. For an offline that is known before any read, use
+    /// [`ScriptedTransport::reporting_offline`].
     Offline,
-    /// A request was attempted and failed.
+    /// Answer a called `send_batch` with [`Error::Transport`]: a request was attempted and failed.
     TransportFailure,
 }
 
@@ -38,6 +42,8 @@ pub struct ScriptedTransport {
     scripted: RefCell<VecDeque<Reply>>,
     sent: RefCell<Vec<MutationBatchRequest>>,
     yielding: std::cell::Cell<bool>,
+    offline_now: std::cell::Cell<bool>,
+    probes: std::cell::Cell<usize>,
 }
 
 impl ScriptedTransport {
@@ -48,7 +54,25 @@ impl ScriptedTransport {
             scripted: RefCell::new(VecDeque::new()),
             sent: RefCell::new(Vec::new()),
             yielding: std::cell::Cell::new(false),
+            offline_now: std::cell::Cell::new(false),
+            probes: std::cell::Cell::new(0),
         }
+    }
+
+    /// Answer `SyncTransport::offline_now` with `true`.
+    ///
+    /// Distinct from [`Reply::Offline`], and the distinction is the point: this one is known
+    /// *before* a batch is read, so a pass that gets it never reads and never marks. `Reply::Offline`
+    /// is a request that was already handed over.
+    #[must_use]
+    pub fn reporting_offline(self) -> Self {
+        self.offline_now.set(true);
+        self
+    }
+
+    /// How many times the runner asked whether the application was offline.
+    pub fn probe_count(&self) -> usize {
+        self.probes.get()
     }
 
     /// Suspend once before answering.
@@ -80,6 +104,11 @@ impl ScriptedTransport {
 }
 
 impl SyncTransport for ScriptedTransport {
+    async fn offline_now(&self) -> Result<bool, Error> {
+        self.probes.set(self.probes.get() + 1);
+        Ok(self.offline_now.get())
+    }
+
     async fn send_batch(
         &self,
         request: MutationBatchRequest,

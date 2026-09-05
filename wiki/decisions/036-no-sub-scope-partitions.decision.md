@@ -5,7 +5,7 @@ Status: Accepted 2026-08-30; closes the primary-key question before D5
 Date: 2026-08-30
 Category: Storage Contract
 Scope: Whether the outbox splits into per-type queues below the scope, and therefore whether the durable primary key is `(seq)` or `(partition, seq)`.
-Sources: `src/record/mod.rs`, `src/store.rs`, `src/testing/cases/liveness.rs`
+Sources: `src/record/mod.rs`, `src/store/mod.rs`, `src/testing/cases/liveness.rs`
 Related: `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/decisions/016-monotonic-enqueue-sequence.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/018-single-flight-drain-mode.decision.md`, `wiki/references/open-decisions.reference.md`
 
 ## Decision

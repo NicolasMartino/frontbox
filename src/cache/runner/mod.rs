@@ -11,6 +11,12 @@ use crate::error::Error;
 /// Matches [`DEFAULT_BATCH_LIMIT`](crate::runner::DEFAULT_BATCH_LIMIT) deliberately: the scan is
 /// answering a question about the same queue a sync pass reads, and two different defaults would
 /// invite the assumption that one of them is a coincidence.
+///
+/// Re-exported 2026-09-06. It was `pub` inside a private module until then — nameable in this
+/// crate's own docs and by nothing downstream, which made the comparison above one no caller could
+/// actually make. Found while writing
+/// `wiki/compatibility/cache-versions-are-optional.compat.md`, which tells an application skipping
+/// the version store to bound its own conflict scan and therefore has to be able to name this.
 pub const DEFAULT_CONFLICT_SCAN: usize = crate::runner::DEFAULT_BATCH_LIMIT;
 
 mod conflict;

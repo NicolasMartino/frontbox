@@ -24,6 +24,7 @@ mod version;
 
 pub use runner::{
     ClassifiedConflict, InvalidationReport, InvalidationRunner, PendingConflict, StaleEntity,
+    DEFAULT_CONFLICT_SCAN,
 };
 pub use store::CacheVersionStore;
 pub use version::CacheVersion;

@@ -78,6 +78,11 @@ frontbox::frontbox_fault_injection_tests_async! {
     factory: fault_factory().await,
 }
 
+frontbox::frontbox_coalescing_tests_async! {
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    factory: conformance_factory().await,
+}
+
 /// **Decision 031's cross-realm half, as far as one realm can check it.**
 ///
 /// The obligation — two browser tabs must not drain one scope together — cannot be asserted from

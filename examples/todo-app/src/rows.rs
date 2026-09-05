@@ -1,6 +1,7 @@
 //! The composer, the list, and one row.
 
 use dioxus::prelude::*;
+use frontbox::CoalescingEnqueue;
 use todo_core::{Direct, Todo};
 
 use crate::toast::{Kind, Toasts};
@@ -107,9 +108,15 @@ fn TodoRow(todo: Todo, saving: bool) -> Element {
 
     let rename = {
         let (ui, id, current_title) = (ui.clone(), todo.id.clone(), todo.title.clone());
-        // `onchange` rather than `oninput`: every call enqueues a durable mutation, so renaming on
-        // each keystroke would put one queued write per character into an outbox that may not
-        // drain for hours.
+        // `onchange` rather than `oninput`, still. Coalescing collapses repeated renames of one row
+        // into a single queued write, which is why this uses `rename_coalescing` — but it is not a
+        // licence for a durable write per keystroke. Each one is still a storage write, and the
+        // collapsing stops the moment a drain reads the record for sending, after which every later
+        // keystroke appends again (`wiki/decisions/044-transport-started-before-the-request.decision.md`).
+        //
+        // What it does buy is the case a user actually hits: edit the title, think better of it,
+        // edit it again, all before the next drain. That used to leave two writes queued and now
+        // leaves one carrying what they settled on.
         move |event: Event<FormData>| {
             let (id, title) = (id.clone(), event.value());
             if title == current_title {
@@ -117,8 +124,22 @@ fn TodoRow(todo: Todo, saving: bool) -> Element {
             }
             dispatch(&ui, toasts, move |app| async move {
                 log("ui action rename_todo");
-                app.rename(&id, &title).await?;
-                Ok(None)
+                Ok(match app.rename_coalescing(&id, &title).await? {
+                    // **The one case worth announcing, and the only way to see it.** A
+                    // replacement means the earlier edit had not been sent, so this took its
+                    // place instead of queueing behind it. Nothing else on screen says so:
+                    // the row already reads "saving…", and the only other signal is the
+                    // pending count staying at 1 rather than going to 2 — a number that does
+                    // not change, which is not something a person can notice.
+                    //
+                    // Found by trying to demonstrate the feature by hand and failing: the UI
+                    // allowed the second rename and gave no sign it had done anything.
+                    CoalescingEnqueue::Replaced { .. } => {
+                        Some("replaced the queued rename — still one write to send".to_owned())
+                    }
+                    // An ordinary append is not news; see `dispatch`.
+                    _ => None,
+                })
             });
         }
     };

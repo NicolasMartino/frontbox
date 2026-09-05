@@ -260,6 +260,24 @@ impl HttpTransport {
 }
 
 impl SyncTransport for HttpTransport {
+    /// The switch, asked before the runner reads a batch rather than after it has one.
+    ///
+    /// This transport is the easy case for the probe and shows why it exists: the plug is *known*
+    /// to be out — a test pulled it, or the UI did — so there is nothing to infer and no request to
+    /// attempt. Answering here means `read_for_send` is never called, so nothing is marked
+    /// transport-started and the queue stays coalescible.
+    ///
+    /// Without it, `send_batch` below would still report offline correctly and the queue would
+    /// still be safe, but every poll while offline would spend the head batch's eligibility for
+    /// `enqueue_coalescing` — which is the eligibility the feature exists to use
+    /// (`wiki/decisions/044-transport-started-before-the-request.decision.md`).
+    ///
+    /// A real transport with no such switch returns the default `false` and loses only the
+    /// coalescing, never correctness.
+    async fn offline_now(&self) -> Result<bool, Error> {
+        Ok(self.offline.get())
+    }
+
     async fn send_batch(
         &self,
         request: MutationBatchRequest,

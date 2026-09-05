@@ -63,3 +63,10 @@ The safe shape is: coalesce only a row-bound pending record whose durable state 
 currently in flight nor ever handed to transport. Existing durable records that predate this marker
 must migrate conservatively as "transport may already have started", so they remain resendable but
 not coalescible.
+
+**Superseded in detail, not in direction.** This page records the check as it was made on
+2026-09-05, and the finding above still holds. What it got wrong is the shape of the remedy: the
+first design carried two durable facts and inferred "never sent" from how a send failed, which
+`wiki/proposals/queued-write-coalescing.proposal.md` then had to correct for the same reason this
+page corrects `attempts == 0`. One fact, written before the request rather than derived from its
+failure, does the whole job. Read the proposal for the contract; this page is provenance.

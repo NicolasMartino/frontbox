@@ -19,6 +19,7 @@ mod common;
 use frontbox::SyncRunner;
 
 // Split where the claims split: what a queue does unreached, and what happens once answered.
+mod coalescing;
 mod queue;
 mod verdicts;
 

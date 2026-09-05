@@ -8,12 +8,18 @@
 //! produces an *authorized* wrong write.
 
 use crate::error::Error;
-use crate::id::MutationId;
-use crate::record::{
-    DeadLetterReason, DeadLetterRecord, MutationIntent, OutboxRecord, QuarantinedRecord, RowRef,
-    StoredRow,
-};
+use crate::record::{MutationIntent, OutboxRecord};
 use crate::scope::ScopeKey;
+
+mod coalescing;
+mod outcome;
+mod rows;
+mod terminal;
+
+pub use coalescing::{CoalescingEnqueue, CoalescingPolicy, CoalescingRefusal};
+pub use outcome::{Disposition, Outcome};
+pub use rows::RowStore;
+pub use terminal::{DeadLetterStore, QuarantineStore};
 
 /// Exclusive drain rights for one scope, held for the length of one pass.
 ///
@@ -56,62 +62,6 @@ impl std::fmt::Debug for DrainLease {
     }
 }
 
-/// What should happen to one pending record.
-///
-/// `#[non_exhaustive]`: a future disposition is additive, so implementors match with a wildcard.
-/// A backend that meets an unrecognised disposition should return [`Error::Protocol`] and commit
-/// nothing, rather than guess.
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub enum Disposition {
-    /// Remove it. The server applied it, or had already seen it.
-    Delete,
-    /// Move it to the dead-letter store. It will not be sent again.
-    DeadLetter {
-        /// Why, so a reader does not have to infer it from what is absent.
-        ///
-        /// Core produces two of the three kinds — a server verdict and its own retention bound.
-        /// The third exists so a caller parking a record for a reason of its own can say what it
-        /// was, rather than being forced into a silence indistinguishable from the bound
-        /// (`wiki/decisions/027-dead-letter-reason.decision.md`).
-        reason: DeadLetterReason,
-    },
-    /// Leave it queued, with one more attempt against it.
-    ///
-    /// Not a no-op: the store increments `attempts` and records `reason`, which is what makes
-    /// decision 017's bound reachable and decision 033's diagnosis possible.
-    Retain {
-        /// Why this verdict left the record queued, in the server's own words.
-        ///
-        /// Truncated by the store to [`LAST_ERROR_MAX`](crate::record::LAST_ERROR_MAX) and never
-        /// parsed. `None` when the caller has nothing to say — an offline pass produces no verdict
-        /// at all and so never reaches here.
-        reason: Option<String>,
-    },
-    /// Move it to quarantine. The record is identifiable but unusable.
-    Quarantine {
-        /// What made the record unusable.
-        reason: String,
-    },
-}
-
-/// One record's disposition, addressed by id.
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub struct Outcome {
-    /// Which record this is about.
-    pub id: MutationId,
-    /// What should happen to it.
-    pub disposition: Disposition,
-}
-
-impl Outcome {
-    /// Pair a record with its disposition.
-    pub fn new(id: MutationId, disposition: Disposition) -> Self {
-        Self { id, disposition }
-    }
-}
-
 /// The pending mutation queue.
 ///
 /// # One drain per scope
@@ -137,7 +87,7 @@ impl Outcome {
 /// What a violation costs is specific, and worth knowing before treating this as optional.
 /// Idempotency survives, because the server dedupes on `mutation_id`. Ordering does not: at
 /// `batch_limit = 1` the second drainer ships record 2 while record 1 is still in flight, which is
-/// the guarantee [`pending_batch`](OutboxStore::pending_batch)'s order key exists to provide. The
+/// the guarantee [`read_for_send`](OutboxStore::read_for_send)'s order key exists to provide. The
 /// retention bound does not either, since two drainers spend one record's `attempts` budget in
 /// parallel and a wedged head reaches its bound in half the wall clock the bound was chosen to
 /// represent (`wiki/decisions/031-cross-realm-single-flight.decision.md`).
@@ -186,10 +136,16 @@ pub trait OutboxStore {
     /// Read up to `limit` pending records in enqueue order, by
     /// [`order_key`](crate::record::OutboxRecord::order_key).
     ///
+    /// **Inspection, not the drain handoff.** [`SyncRunner`](crate::runner::SyncRunner) sends what
+    /// [`read_for_send`](OutboxStore::read_for_send) returns, which is this read plus a durable
+    /// mark. Use this one to look at the queue without changing it — a pending-work view, a
+    /// diagnostic, a test. Everything below about ordering, scope, and undecodable rows applies to
+    /// both.
+    ///
     /// **The order is the sequence the store assigned at enqueue**, not the client clock. D1 and D2
     /// ordered by `(created_at, mutation_id)`, which was total and reproducible but not faithful:
     /// `created_at` is a clock reading, and same-millisecond ties broke on a random
-    /// [`MutationId`], so three rapid writes could be drained in an order the
+    /// [`MutationId`](crate::id::MutationId), so three rapid writes could be drained in an order the
     /// application never wrote in — a set before the session it belongs to. Under batching the
     /// server received the whole batch and evaluated it in that same wrong order; at
     /// `batch_limit = 1` a wrong order is a wrong write
@@ -238,9 +194,16 @@ pub trait OutboxStore {
     /// is otherwise healthy — the outcome decision 006 exists to prevent.
     ///
     /// So the contract is: **a caller that reads without ever syncing must call this itself.**
-    /// [`SyncRunner`](crate::runner::SyncRunner) sweeps at the start of every pass and reports the
-    /// count in [`SyncReport::quarantined`](crate::runner::SyncReport::quarantined), so an
-    /// application that syncs at all closes the window on its own.
+    /// [`SyncRunner`](crate::runner::SyncRunner) sweeps at the start of every pass *that reads* and
+    /// reports the count in [`SyncReport::quarantined`](crate::runner::SyncReport::quarantined), so
+    /// an application that syncs while connected closes the window on its own.
+    ///
+    /// **A pass that ends at
+    /// [`offline_now`](crate::transport::SyncTransport::offline_now) does not sweep**, because it
+    /// touches storage not at all — that is the property it exists to have. An application offline
+    /// for a long stretch therefore keeps any corrupt rows invisible until it next reaches the
+    /// network, or until it calls this itself. The window is bounded by connectivity rather than by
+    /// the poll interval, which is a weaker bound than the one this paragraph used to state.
     async fn sweep_corrupt(&self) -> Result<usize, Error>;
 
     /// Apply every outcome atomically.
@@ -272,124 +235,122 @@ pub trait OutboxStore {
     /// store, SQLite, and IndexedDB all fail the suite if any of them silently applies one of a
     /// repeated pair instead.
     async fn apply_outcomes(&self, outcomes: &[Outcome]) -> Result<(), Error>;
-}
 
-/// Mutations the server terminally refused.
-///
-/// Reads here are scoped and exclude other scopes' records, exactly as on [`OutboxStore`].
-///
-/// There is no `insert`. A dead letter is a transition out of the outbox after a server verdict,
-/// produced by [`OutboxStore::apply_outcomes`] where the backend still holds the pending record and
-/// can move it atomically — never a free-standing write.
-#[allow(async_fn_in_trait)] // See the note on `SyncTransport`; decision 001.
-pub trait DeadLetterStore {
-    /// Read up to `limit` dead letters in this store's scope, **ordered by
-    /// `(rejected_at, mutation_id)`**.
+    /// Queue a mutation, replacing one safe same-row queued write instead of appending behind it.
     ///
-    /// # Why the order is stated rather than left to the backend
+    /// The opt-in half of `enqueue`. Where a caller has a newer body for a write that is still
+    /// queued and still unsent, this replaces that record's body in place rather than adding a
+    /// second one — so two offline edits to one row leave one eventual send, carrying the later body
+    /// under the earlier record's identifier and precondition.
     ///
-    /// It was left to the backend, and three backends chose three orders: the in-memory store
-    /// sorted by `(rejected_at, mutation_id)`, SQLite by its insertion rowid, and IndexedDB by
-    /// whatever its scope index handed back. All three agree as long as records are parked in
-    /// timestamp order — which is why the conformance suite passed on all three — and they diverge
-    /// the moment they are not. An injected [`Clock`](crate::Clock) makes that routine, and a real
-    /// one makes it possible: nothing requires the clock behind a retention sweep to run ahead of
-    /// the clock behind a server rejection.
+    /// # When a replacement happens
     ///
-    /// The divergence only becomes visible when `limit` truncates, and then it is a different *set*
-    /// of records per backend, not merely a different sequence. That is the failure this crate
-    /// exists to prevent, so the trait states the order and conformance case 68 pins it.
+    /// All of these, or the call falls back to what [`policy`](CoalescingPolicy) says:
     ///
-    /// `rejected_at` first, because a human triaging a queue asks *what broke, and when* — the
-    /// oldest unresolved parking is the one to look at. [`MutationId`] breaks the tie because it is
-    /// the only field guaranteed present, unique, and stable, and it is compared by its bytes: a
-    /// backend storing it as text must use a binary collation, since a case-insensitive one orders
-    /// hex differently (`src/id.rs`).
-    async fn list(&self, limit: usize) -> Result<Vec<DeadLetterRecord>, Error>;
+    /// - the intent carries a [`RowRef`](crate::record::RowRef);
+    /// - exactly one decodable pending record in this scope has the same `RowRef`, method, and path;
+    /// - that record is **not transport-started**.
+    ///
+    /// # Transport-started is one durable fact with two writers
+    ///
+    /// The last condition is what makes this safe. It is a durable per-record boolean, never
+    /// cleared, and **both** of the ways a record can reach the server set it:
+    ///
+    /// - [`read_for_send`](OutboxStore::read_for_send) sets it on every record it returns, in the
+    ///   same transaction, before the request is built;
+    /// - [`apply_outcomes`](OutboxStore::apply_outcomes) sets it when it applies a
+    ///   [`Disposition::Retain`], because a verdict cannot exist without a request.
+    ///
+    /// The second writer is not redundant. This trait is public and a backend cannot assume the
+    /// runner is its only caller: a caller may read with [`pending_batch`](OutboxStore::pending_batch),
+    /// send that batch through its own transport, and apply the verdicts itself, never once touching
+    /// `read_for_send`. Phrasing eligibility as "not read for sending" would call such a record
+    /// coalescible after the server has certainly seen it — the hole review found in the first
+    /// implementation, and what conformance case 80 now pins shut.
+    ///
+    /// Eligibility is also deliberately *not* `attempts == 0`.
+    /// [`attempts`](crate::record::OutboxRecord::attempts) counts verdicts **received**, so an
+    /// offline pass and an attempted transport failure both leave it at zero after the record may
+    /// already have reached the server (`wiki/decisions/017-bounded-retention.decision.md`).
+    ///
+    /// # What survives, and what the new intent supplies
+    ///
+    /// The queued slot and its guard are the queue's; the content is the caller's latest.
+    ///
+    /// | Kept from the queued record | Taken from the new intent |
+    /// | --- | --- |
+    /// | `seq`, `mutation_id`, `precondition` | `body`, `op`, `traceparent`, `created_at` |
+    ///
+    /// `seq` keeps the record where decision 016 put it, `mutation_id` keeps idempotency stable, and
+    /// the precondition is the whole point — it names the last state the server confirmed, which is
+    /// the only state a conflict can honestly be detected against
+    /// (`wiki/decisions/026-replayable-preconditions.decision.md`).
+    ///
+    /// Everything in the right-hand column *describes the body*, and the body is being replaced.
+    /// Keeping the old [`op`](crate::record::OperationMeta) would put a stale operation name and a
+    /// stale `version` — documented as "what wrote the body" — over a body that did not write it,
+    /// on the surface a human reads after a refusal. Keeping the old `traceparent` would point the
+    /// trace at the user action whose body was discarded, which is the link decision 022 exists to
+    /// preserve. Keeping the old `created_at` would send the newer body stamped with the older
+    /// write's `client_datetime`. None of the four is ordered on, because `seq` is the only sort key.
+    ///
+    /// `attempts` and `last_error` need no rule: a record that is not transport-started has received
+    /// no verdict, so they are already `0` and `None`.
+    ///
+    /// # Replacement discards the queued body
+    ///
+    /// **Opt in only where your bodies carry full row state.** For a full-document `PUT` this is
+    /// last-write-wins and correct. For a partial update it is not: coalescing two `PATCH` bodies
+    /// drops every field the first changed that the second does not mention.
+    ///
+    /// The obligation is stated here rather than left to the caller because the caller cannot always
+    /// discharge it. Under [`CoalescingPolicy::RequireExisting`] the application does not know what
+    /// body is queued — not knowing is the reason it cannot compute a precondition — so it is in no
+    /// position to work out what a replacement would throw away.
+    ///
+    /// # Atomicity
+    ///
+    /// One transaction: either exactly one record is replaced, exactly one is appended, or nothing
+    /// is written. It must serialize against [`read_for_send`](OutboxStore::read_for_send), or a
+    /// replacement could land against a record whose old body is already on its way to the server.
+    /// A backend must not make the eligibility check a read-only transaction for this reason —
+    /// IndexedDB runs those concurrently with read-write ones.
+    ///
+    /// # Errors
+    ///
+    /// A storage failure, or a body that will not serialize. A refusal is **not** an error: it is
+    /// [`CoalescingEnqueue::NotQueued`], and only [`CoalescingPolicy::RequireExisting`] produces one.
+    async fn enqueue_coalescing(
+        &self,
+        intent: MutationIntent,
+        policy: CoalescingPolicy,
+    ) -> Result<CoalescingEnqueue, Error>;
 
-    /// Count dead letters in this store's scope.
-    async fn count(&self) -> Result<usize, Error>;
-
-    /// Drop dead letters rejected before `cutoff_ms`, returning how many were dropped.
+    /// Read up to `limit` pending records for sending, **marking each as transport-started in the
+    /// same transaction**.
     ///
-    /// The caller computes the cutoff from its own clock, so retention is deterministic and
-    /// testable rather than depending on wall-clock time inside the store.
-    async fn purge_older_than(&self, cutoff_ms: i64) -> Result<usize, Error>;
-}
-
-/// Read-model rows, stored as values core never reads.
-///
-/// # The boundary this draws
-///
-/// frontbox holds the bytes and the bookkeeping; the application holds the meaning. There is no
-/// query language here, no index over the application's fields, and no subscription surface —
-/// those belong to the local-first database cohort, and going there means competing with mature
-/// systems on data this crate understands nothing about
-/// (`wiki/decisions/032-opaque-row-store.decision.md`).
-///
-/// What it replaces is worse: before this, every application wanting offline reads opened a second
-/// durable store beside frontbox's, and re-derived the merge rule below by hand.
-///
-/// Reads here are scoped exactly as on [`OutboxStore`].
-#[allow(async_fn_in_trait)] // See the note on `SyncTransport`; decision 001.
-pub trait RowStore {
-    /// Read one row, if this scope holds it.
-    async fn get_row(&self, row: &RowRef) -> Result<Option<StoredRow>, Error>;
-
-    /// Read up to `limit` rows of one entity, in `row_id` order.
-    async fn list_rows(&self, entity: &str, limit: usize) -> Result<Vec<StoredRow>, Error>;
-
-    /// Write rows, replacing any this scope already holds under the same keys.
+    /// The drain handoff. [`pending_batch`](OutboxStore::pending_batch) is the same read without the
+    /// mark, and is inspection only — [`SyncRunner`](crate::runner::SyncRunner) calls this instead,
+    /// so the ordering guarantee `pending_batch` documents is delivered here.
     ///
-    /// The application's own writes: an optimistic projection, or the result of a fetch it chose
-    /// to trust. Nothing is skipped, because the caller is stating what it wants stored.
-    async fn put_rows(&self, rows: &[StoredRow]) -> Result<(), Error>;
-
-    /// Write rows from the server, **skipping any row with queued work**.
+    /// The mark is what [`enqueue_coalescing`](OutboxStore::enqueue_coalescing) tests against, and it
+    /// is never cleared. That asymmetry is the design:
     ///
-    /// # The rule, and why it is here rather than in every application
+    /// - **Set before the request, not after it.** A pass that ends in [`Error::Offline`] cannot
+    ///   prove no request left the device — `src/transport.rs` tells implementors to return it when
+    ///   a browser `fetch` fails for lack of connectivity, and such a `fetch` rejects identically
+    ///   whether the request never went out or reached the server and lost its response. A body
+    ///   rewritten under that uncertainty is a body the server dedupes away and never applies.
+    /// - **Never cleared, so nothing has to be recovered.** A crash, a cancelled future, or a lost
+    ///   response all leave the mark already set, which is the conservative reading each of them
+    ///   needs. There is no lease to release and no abandoned state to sweep.
     ///
-    /// A client that reloads with unsent writes has local rows the server has not seen. Writing
-    /// the server's list over them drops exactly the work the user is waiting on — it reappears a
-    /// drain later, so nothing is lost, but the screen lies in the meantime, and for an offline
-    /// client "the meantime" is unbounded.
+    /// The cost is that a pass which reads a batch spends that batch's coalescibility whether or not
+    /// anything was sent. [`SyncTransport::offline_now`](crate::transport::SyncTransport::offline_now)
+    /// is what keeps an offline application from paying it on every poll: the runner asks before it
+    /// reads, so a client that knows it is offline never reaches this method.
     ///
-    /// The skip is decidable only by something that can see both the rows and the queue, which is
-    /// why decision 032 brought the rows inside. A row is skipped when a pending mutation in this
-    /// scope is bound to it — see [`MutationIntent::with_row`](crate::record::MutationIntent::with_row).
-    /// Unbound mutations protect nothing, so a caller that never binds gets a plain write.
-    ///
-    /// Returns the rows that were skipped, so a caller can say why its screen still disagrees with
-    /// the server.
-    async fn merge_rows(&self, rows: &[StoredRow]) -> Result<Vec<RowRef>, Error>;
-
-    /// Forget rows, and the staleness markers that describe them.
-    ///
-    /// The marker dying with the row is the point: decision 023 owed an unbounded-growth policy
-    /// precisely because frontbox could not see the deletions that made its markers garbage.
-    async fn delete_rows(&self, rows: &[RowRef]) -> Result<usize, Error>;
-
-    /// Mark rows out of step with the server, returning how many changed.
-    async fn set_stale(&self, rows: &[RowRef], stale: bool) -> Result<usize, Error>;
-}
-
-/// Locally stored rows that could not be used.
-///
-/// Reads here are scoped and exclude other scopes' records, exactly as on [`OutboxStore`].
-///
-/// No `insert`, for the same reason [`DeadLetterStore`] has none: a quarantine entry is a
-/// transition out of the outbox, produced by [`OutboxStore::apply_outcomes`] or
-/// [`OutboxStore::sweep_corrupt`].
-#[allow(async_fn_in_trait)] // See the note on `SyncTransport`; decision 001.
-pub trait QuarantineStore {
-    /// Read up to `limit` quarantined rows in this store's scope, **ordered by
-    /// `(quarantined_at, raw_mutation_id)`**.
-    ///
-    /// The same rule as [`DeadLetterStore::list`], and stated for the same reason — see there for
-    /// the argument. The tie-break is the *raw* identifier, compared as bytes, because a
-    /// quarantined row is one whose identifier may not parse; that string is all there is.
-    async fn list(&self, limit: usize) -> Result<Vec<QuarantinedRecord>, Error>;
-
-    /// Count quarantined rows in this store's scope.
-    async fn count(&self) -> Result<usize, Error>;
+    /// Ordering, scope filtering, and the treatment of undecodable rows are exactly
+    /// [`pending_batch`](OutboxStore::pending_batch)'s — see there.
+    async fn read_for_send(&self, limit: usize) -> Result<Vec<OutboxRecord>, Error>;
 }

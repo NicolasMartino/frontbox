@@ -19,11 +19,24 @@ use crate::id::MutationId;
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// No request could be attempted because the network is unavailable.
+    /// The transport reports the network as unavailable.
     ///
     /// Distinct from [`Error::Transport`] on purpose: offline is an expected operating mode for an
     /// offline-first queue, and must not drive the error-backoff path
     /// (`wiki/decisions/004-transport-auth-and-offline.decision.md`).
+    ///
+    /// # What this is, and what nothing relies on it for
+    ///
+    /// It is the implementor's *claim*, and deliberately not phrased as "no request reached the
+    /// server", because on some platforms nothing can establish that: a browser `fetch` rejects with
+    /// an opaque `TypeError` whether the request never left the device or reached the server and
+    /// lost its response. The claim is still worth making — it drives status and retry behaviour,
+    /// and being wrong there costs a misleading report and one wasted tick.
+    ///
+    /// **No safety property rests on it.** Coalescing eligibility could have been derived from this
+    /// and deliberately is not; the durable mark is written before the request instead, so a
+    /// transport that answers `Offline` for a request the server actually saw cannot cause a queued
+    /// body to be rewritten (`wiki/decisions/044-transport-started-before-the-request.decision.md`).
     #[error("offline")]
     Offline,
 
@@ -177,9 +190,11 @@ impl Error {
         }
     }
 
-    /// Whether this failure means no request reached the network.
+    /// Whether the transport reported the network as unavailable.
     ///
-    /// The runner uses this to keep work queued without counting a failed attempt.
+    /// The runner uses this to keep work queued without counting a failed attempt. It reads the
+    /// implementor's claim rather than an observation of what the server saw, and [`Error::Offline`]
+    /// records what does and does not depend on that claim being exactly right.
     pub const fn is_offline(&self) -> bool {
         matches!(self, Self::Offline)
     }

@@ -45,18 +45,26 @@ frontbox::frontbox_row_tests! {
     block_on: pollster::block_on,
 }
 
+frontbox::frontbox_coalescing_tests! {
+    #[test]
+    factory: InMemoryFactory::new(),
+    block_on: pollster::block_on,
+}
+
 /// The async emission shape, compiled but not run.
 ///
-/// The backend that needs it is IndexedDB, which is D5 and does not exist yet, and no attribute
-/// available to a native test both accepts an `async fn` and runs it without adding a runtime
-/// dependency this crate has no other use for. So these are emitted with `#[allow(dead_code)]`:
-/// nothing executes, but the macro is expanded and type-checked on every build.
+/// The backend that needs it is IndexedDB, which now exists and runs these suites for real in
+/// headless Chrome — so this is no longer the only proof the async wrappers compile. It is kept
+/// because it is the *cheap* proof: no attribute available to a native test both accepts an
+/// `async fn` and runs it without a runtime dependency this crate has no other use for, so these
+/// are emitted with `#[allow(dead_code)]` and nothing executes, but the macro is expanded and
+/// type-checked on every ordinary `cargo test`.
 ///
-/// That is the failure this guards against. A macro nobody instantiates is a macro that compiles
-/// until the day someone tries it — which for the async variant would be halfway through the
-/// IndexedDB port, when a missing `.await` or a stale case name is at its most expensive to
-/// discover. The cases themselves are already proven by the synchronous suite above; what is
-/// unproven without this is the wrapper.
+/// That is what it still guards. A stale case name or a missing `.await` in an async wrapper is
+/// otherwise invisible until someone runs the browser gate — which `scripts/verify.sh` announces
+/// as SKIPPED when `CHROMEDRIVER` is unset, so it is the gate most likely to be absent on the
+/// machine where the mistake is made. The cases themselves are proven by the synchronous suite
+/// above; what this keeps honest is the wrapper.
 mod async_shape {
     use frontbox::memory::InMemoryFactory;
 
@@ -81,6 +89,11 @@ mod async_shape {
     }
 
     frontbox::frontbox_row_tests_async! {
+        #[allow(dead_code)]
+        factory: InMemoryFactory::new(),
+    }
+
+    frontbox::frontbox_coalescing_tests_async! {
         #[allow(dead_code)]
         factory: InMemoryFactory::new(),
     }

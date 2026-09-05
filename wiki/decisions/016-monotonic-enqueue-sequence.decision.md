@@ -5,7 +5,7 @@ Status: Accepted 2026-08-27; implemented 2026-08-29
 Date: 2026-08-27
 Category: Sync Semantics
 Scope: What determines the order in which pending mutations are sent, and where that order is stored.
-Sources: `src/store.rs`, `src/runner/mod.rs`, `src/record/mod.rs`, `wiki/references/repforge-single-flight-proposal.reference.md`
+Sources: `src/store/mod.rs`, `src/runner/mod.rs`, `src/record/mod.rs`, `wiki/references/repforge-single-flight-proposal.reference.md`
 Related: `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/decisions/008-mutation-envelope-extensibility.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/019-verdict-synthesis.decision.md`, `wiki/proposals/single-flight-drain.proposal.md`, `wiki/roadmaps/extraction.roadmap.md`
 
 ## Decision

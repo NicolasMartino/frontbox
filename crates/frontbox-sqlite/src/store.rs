@@ -3,13 +3,15 @@
 use std::collections::HashSet;
 
 use frontbox::{
-    truncate_error, DeadLetterRecord, Disposition, Error, MutationId, MutationIntent, OutboxRecord,
-    OutboxStore, Outcome, QuarantinedRecord, ScopeKey,
+    truncate_error, CoalescingEnqueue, CoalescingPolicy, DeadLetterRecord, Disposition, Error,
+    MutationId, MutationIntent, OutboxRecord, OutboxStore, Outcome, QuarantinedRecord, ScopeKey,
 };
 use rusqlite::{params, OptionalExtension};
 
 use crate::backend::{storage, SqliteStore};
-use crate::convert::{body_text, decode, quarantine_from, read_raw, RawRow, OUTBOX_COLUMNS};
+use crate::convert::{
+    decode, insert_intent, quarantine_from, raw_page_on, read_raw, RawRow, OUTBOX_COLUMNS,
+};
 use crate::terminal::{insert_dead_letter, insert_quarantine};
 
 impl SqliteStore {
@@ -26,20 +28,7 @@ impl SqliteStore {
     /// so "everything after the last one I saw" is stable whatever else happens.
     fn raw_page(&self, after_seq: i64, window: usize) -> Result<Vec<RawRow>, Error> {
         let connection = self.backend.connection().borrow();
-        let sql = format!(
-            "SELECT {OUTBOX_COLUMNS} FROM outbox WHERE scope = ?1 AND seq > ?2 \
-             ORDER BY seq LIMIT ?3"
-        );
-        let mut statement = connection.prepare(&sql).map_err(storage)?;
-        let page = statement
-            .query_map(
-                params![self.scope.as_str(), after_seq, window as i64],
-                read_raw,
-            )
-            .map_err(storage)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(storage);
-        page
+        raw_page_on(&connection, &self.scope, after_seq, window)
     }
 }
 
@@ -49,42 +38,8 @@ impl OutboxStore for SqliteStore {
     }
 
     async fn enqueue(&self, intent: MutationIntent) -> Result<(), Error> {
-        let body = body_text(&intent.body)?;
-        let (op_name, op_version) = match &intent.op {
-            Some(op) => (Some(op.name.clone()), op.version.clone()),
-            None => (None, None),
-        };
-        let (row_entity, row_id) = match &intent.row {
-            Some(row) => (Some(row.entity.clone()), Some(row.row_id.clone())),
-            None => (None, None),
-        };
-
         let connection = self.backend.connection().borrow();
-        // `seq` comes from `AUTOINCREMENT` inside this insert, which is what decision 016 requires:
-        // the store issues the order key, the caller cannot forge one, and two concurrent enqueues
-        // cannot read the same next value because SQLite assigns it under the row lock.
-        connection
-            .execute(
-                "INSERT INTO outbox (scope, mutation_id, method, path, raw_body, created_at, \
-                 op_name, op_version, traceparent, precondition, row_entity, row_id, attempts) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0)",
-                params![
-                    self.scope.as_str(),
-                    intent.mutation_id.to_string(),
-                    intent.method,
-                    intent.path,
-                    body,
-                    intent.created_at,
-                    op_name,
-                    op_version,
-                    intent.traceparent,
-                    intent.precondition,
-                    row_entity,
-                    row_id,
-                ],
-            )
-            .map_err(storage)?;
-        Ok(())
+        insert_intent(&connection, &self.scope, &intent)
     }
 
     /// # Why this pages rather than over-reading
@@ -153,6 +108,18 @@ impl OutboxStore for SqliteStore {
                 .filter(|raw| decode(raw, &self.scope).is_ok())
                 .count();
         }
+    }
+
+    async fn enqueue_coalescing(
+        &self,
+        intent: MutationIntent,
+        policy: CoalescingPolicy,
+    ) -> Result<CoalescingEnqueue, Error> {
+        self.enqueue_coalescing_impl(intent, policy).await
+    }
+
+    async fn read_for_send(&self, limit: usize) -> Result<Vec<OutboxRecord>, Error> {
+        self.read_for_send_impl(limit).await
     }
 
     async fn sweep_corrupt(&self) -> Result<usize, Error> {
@@ -231,10 +198,14 @@ impl OutboxStore for SqliteStore {
         for (raw, outcome) in targets {
             match &outcome.disposition {
                 Disposition::Retain { reason } => {
+                    // `transport_started` too: a `Retain` is a verdict, and a verdict cannot exist
+                    // without a request. `apply_outcomes` is public, so a direct caller that read
+                    // with `pending_batch` and sent the batch itself must not leave the record
+                    // coalescible (conformance case 80).
                     transaction
                         .execute(
-                            "UPDATE outbox SET attempts = attempts + 1, last_error = ?2 \
-                             WHERE seq = ?1",
+                            "UPDATE outbox SET attempts = attempts + 1, last_error = ?2, \
+                             transport_started = 1 WHERE seq = ?1",
                             params![raw.seq as i64, reason.as_deref().map(truncate_error)],
                         )
                         .map_err(storage)?;

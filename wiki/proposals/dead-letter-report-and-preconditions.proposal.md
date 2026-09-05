@@ -5,7 +5,7 @@ Status: **Accepted 2026-08-29**; produced decisions 026 and 027, both built 2026
 Date: 2026-08-29
 Category: Architecture
 Scope: frontbox's contribution to the dead-letter report schema RepForge invited input on, and a question about write preconditions that decides whether the outbox gains a column.
-Sources: `src/record/mod.rs`, `src/store.rs`, `src/runner/mod.rs`, `wiki/references/repforge-section-c-answers.reference.md`
+Sources: `src/record/mod.rs`, `src/store/mod.rs`, `src/runner/mod.rs`, `wiki/references/repforge-section-c-answers.reference.md`
 Related: `wiki/proposals/repforge-read-model-convergence.proposal.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/022-durable-trace-context.decision.md`, `wiki/decisions/009-local-scope-identity.decision.md`, `wiki/decisions/019-verdict-synthesis.decision.md`, `wiki/references/open-decisions.reference.md`
 
 ## 0. Two Items

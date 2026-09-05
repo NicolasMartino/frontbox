@@ -62,7 +62,31 @@ pub enum SyncPass {
     Completed,
     /// Nothing was pending.
     Idle,
-    /// No request could be attempted. Work is untouched, and this is not a failed attempt.
+    /// The transport reported the network as unavailable. Every record stays queued, and this is
+    /// not a failed attempt.
+    ///
+    /// Deliberately not "no request reached the server". One of the two passes below hands a batch
+    /// to the transport before finding out, and [`Error::Offline`](crate::Error::Offline) is a claim
+    /// about connectivity rather than an observation of what the server received.
+    ///
+    /// # Two passes end here, and they are not identical
+    ///
+    /// A pass whose transport answered
+    /// [`offline_now`](crate::transport::SyncTransport::offline_now) never read a batch: [`sent`]
+    /// and [`retained`] are zero, [`quarantined`] is zero because no sweep ran, and nothing durable
+    /// was written.
+    ///
+    /// A pass that read a batch and *then* got [`Error::Offline`](crate::Error::Offline) from
+    /// `send_batch` reports `sent` and `retained` as the batch size, swept before reading, and has
+    /// already marked those records transport-started — which is deliberate and not reversible, see
+    /// [`read_for_send`](crate::store::OutboxStore::read_for_send).
+    ///
+    /// Both leave the queue's *contents* untouched. Only the second spends those records'
+    /// eligibility for [`enqueue_coalescing`](crate::store::OutboxStore::enqueue_coalescing).
+    ///
+    /// [`sent`]: SyncReport::sent
+    /// [`retained`]: SyncReport::retained
+    /// [`quarantined`]: SyncReport::quarantined
     Offline,
     /// A pass was already in flight on this scope, so this call did nothing.
     ///

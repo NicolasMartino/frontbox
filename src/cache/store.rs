@@ -6,12 +6,33 @@ use crate::scope::ScopeKey;
 
 /// Durable per-entity cache version state, scoped to one identity.
 ///
-/// The third storage trait, alongside [`OutboxStore`](crate::store::OutboxStore) and its
-/// companions, and scoped the same way: every read is filtered by the store's
-/// [`ScopeKey`](crate::scope::ScopeKey), and two scopes sharing one physical store cannot observe
-/// each other. That is not decoration. Cache versions are per-user server state, so a store that
-/// leaked them across a user switch would leave the new user believing the previous user's data is
-/// fresh (`wiki/decisions/009-local-scope-identity.decision.md`).
+/// # Optional, and more applications should skip it than adopt it
+///
+/// **Nothing else in this crate needs this trait.** The outbox, the sync runner, the drain loop,
+/// dead letters and quarantine are all complete without it, and an application that never builds an
+/// [`InvalidationRunner`](crate::cache::InvalidationRunner) never touches it. It is implemented on
+/// its own type in every backend and covered by its own conformance suite, which a backend without
+/// one simply does not invoke.
+///
+/// Say that first because the opposite was inferred once, at cost: an adopter wired a version store
+/// up because the reference application had one, then removed it on finding nothing read it. A plain
+/// periodic re-read is a legitimate invalidation strategy, not a shortcut, and versions are an
+/// optimisation over it — worth adopting when a screen aggregates many sources, when reads are
+/// expensive, or when invalidation has to be selective.
+///
+/// The one consequence worth knowing before skipping it is not about versions at all:
+/// [`stale`](crate::cache::InvalidationRunner::stale) is what reports that refetching would discard
+/// unsent local work, and it comes with the runner. Give that up deliberately —
+/// `wiki/compatibility/cache-versions-are-optional.compat.md` covers when versions earn their keep
+/// and how to keep the conflict check without them.
+///
+/// # Scope
+///
+/// Scoped exactly as [`OutboxStore`](crate::store::OutboxStore) is: every read is filtered by the
+/// store's [`ScopeKey`](crate::scope::ScopeKey), and two scopes sharing one physical store cannot
+/// observe each other. That is not decoration. Cache versions are per-user server state, so a store
+/// that leaked them across a user switch would leave the new user believing the previous user's data
+/// is fresh (`wiki/decisions/009-local-scope-identity.decision.md`).
 ///
 /// # Why this speaks strings, not entity keys
 ///

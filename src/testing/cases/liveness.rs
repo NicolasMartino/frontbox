@@ -183,10 +183,15 @@ pub async fn case_47_retention_bound_dead_letters_without_a_rejection<F: StoreFa
 /// happened — the server has now told us the same unusable thing N times.
 ///
 /// The two passes here are not the same event and the distinction is worth keeping straight.
-/// `Offline` means the record was never sent. A transport failure means a request **was** attempted
-/// and may well have reached the server, with only the response lost. What they share is that
-/// neither produced a verdict this client can read, and the count measures verdicts received rather
-/// than requests made.
+/// `Offline` is the transport's claim that the network was unavailable; a transport failure is its
+/// report that a request was attempted and failed. Neither is proof about what the server received —
+/// `Error::Offline` is documented as a claim precisely because a browser `fetch` rejects the same way
+/// whether the request never left or its response was lost, which is why coalescing eligibility is a
+/// durable mark written *before* the request rather than an inference from either of these
+/// (`wiki/decisions/044-transport-started-before-the-request.decision.md`).
+///
+/// What the two share is that neither produced a verdict this client can read, and the count
+/// measures verdicts received rather than requests made.
 pub async fn case_48_no_verdict_is_not_an_attempt<F: StoreFactory>(
     factory: &F,
 ) -> Result<(), Error> {

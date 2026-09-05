@@ -141,6 +141,10 @@ impl StoreFactory for IdbFactory {
             row_id: None,
             attempts: 0,
             last_error: None,
+            // A corrupt row has no decodable row binding to match on, so this is never consulted.
+            // `false` keeps it the shape a fresh enqueue writes rather than making corruption a
+            // second thing the flag can mean.
+            transport_started: false,
         };
         let transaction = self
             .backend

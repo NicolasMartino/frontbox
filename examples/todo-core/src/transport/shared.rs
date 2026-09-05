@@ -41,6 +41,10 @@ impl std::ops::Deref for SharedTransport {
 }
 
 impl SyncTransport for SharedTransport {
+    async fn offline_now(&self) -> Result<bool, Error> {
+        self.0.offline_now().await
+    }
+
     async fn send_batch(
         &self,
         request: MutationBatchRequest,

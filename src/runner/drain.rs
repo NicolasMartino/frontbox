@@ -33,7 +33,12 @@ pub enum DrainEnd {
     /// The queue is not empty and the drain stopped anyway. [`drain`](SyncRunner::drain) explains
     /// under *Why it stops here* why that is the right answer rather than a reason to try harder.
     Stalled,
-    /// No request could be attempted. Work is untouched, and this is not a failed attempt.
+    /// The transport reported the network as unavailable. Every record stays queued, and this is
+    /// not a failed attempt.
+    ///
+    /// Reached either before the first read or after a batch was already handed over, exactly as
+    /// [`SyncPass::Offline`](crate::runner::SyncPass::Offline) describes — see there for what the
+    /// two differ in, and why neither is phrased as proof that the server saw nothing.
     Offline,
     /// A pass was already in flight on this scope, so this drain did nothing.
     AlreadyRunning,

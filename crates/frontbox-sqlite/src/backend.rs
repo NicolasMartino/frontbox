@@ -7,7 +7,7 @@ use std::rc::Rc;
 use frontbox::{Clock, Error, ScopeKey};
 use rusqlite::Connection;
 
-use crate::schema::SCHEMA;
+use crate::schema::{migrate, SCHEMA};
 
 /// A SQLite database holding every scope's storage.
 ///
@@ -58,6 +58,10 @@ impl SqliteBackend {
 
     fn from_connection(connection: Connection, clock: impl Clock + 'static) -> Result<Self, Error> {
         connection.execute_batch(SCHEMA).map_err(storage)?;
+        // `SCHEMA` creates what is absent; this changes what is present. An existing database
+        // predating a column gets it here, because `CREATE TABLE IF NOT EXISTS` would leave it
+        // exactly as it found it (`crates/frontbox-sqlite/src/schema.rs`).
+        migrate(&connection).map_err(storage)?;
         Ok(Self {
             connection: Rc::new(RefCell::new(connection)),
             clock: Rc::new(clock),

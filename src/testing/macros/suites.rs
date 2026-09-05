@@ -150,6 +150,38 @@ macro_rules! __frontbox_fault_injection_suite {
     };
 }
 
+/// The one list of queued-write coalescing cases, shared by the sync and async entry points.
+///
+/// Its own suite rather than lines in the conformance list, because coalescing is an opt-in feature
+/// with two new required store methods: a backend that has not ported them says so by not invoking
+/// this, instead of failing forty unrelated cases.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __frontbox_coalescing_suite {
+    (run: { $($run:tt)* }, attr: [$($attr:tt)*], factory: $factory:expr $(,)?) => {
+        $crate::__frontbox_emit_cases! {
+            run: { $($run)* },
+            attr: [$($attr)*],
+            factory: $factory,
+            cases: [
+                case_70_a_second_edit_replaces_the_first_body,
+                case_71_a_replacement_keeps_the_slot_and_takes_the_content,
+                case_72_a_record_read_for_sending_is_not_coalescible,
+                case_73_append_if_missing_never_drops_a_write,
+                case_74_require_existing_names_its_refusals,
+                case_75_matching_needs_row_method_and_path,
+                case_76_coalescing_cannot_reach_another_scope,
+                case_77_a_replaced_record_drains_once_with_the_newer_body,
+                case_78_an_offline_probe_reads_nothing_and_preserves_coalescing,
+                case_79_offline_during_a_send_still_spends_coalescibility,
+                case_80_a_retained_verdict_spends_coalescibility,
+                case_81_a_failed_transport_spends_coalescibility,
+                case_82_an_omitted_verdict_leaves_the_record_spent,
+            ]
+        }
+    };
+}
+
 // Emitted one case at a time rather than with a single `$(...)*` over the case list, because the
 // attributes and the case names repeat at different depths and macro_rules cannot nest those.
 #[doc(hidden)]

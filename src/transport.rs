@@ -28,6 +28,12 @@ use crate::protocol::{MutationBatchRequest, MutationBatchResponse};
 /// attempt, because being offline is an expected operating mode for this crate rather than an
 /// error. Collapsing the two produces misleading status and retry behavior.
 ///
+/// Neither classification is read as evidence about what the server received. `Offline` here is a
+/// claim, not an observation, and returning it for a request the server actually applied costs a
+/// misleading report and nothing more — see [`Error::Offline`] and [`offline_now`].
+///
+/// [`offline_now`]: SyncTransport::offline_now
+///
 /// Missing credentials are neither. An application may decline to sync without them, or its
 /// transport may return a typed failure, but this crate does not invent credentials and does not
 /// treat their absence as network loss.
@@ -165,4 +171,51 @@ pub trait SyncTransport {
         &self,
         request: MutationBatchRequest,
     ) -> Result<MutationBatchResponse, Error>;
+
+    /// Whether the application already knows it is offline, asked **before** a batch is read.
+    ///
+    /// `true` makes the pass report [`SyncPass::Offline`](crate::runner::SyncPass::Offline) having
+    /// read nothing, swept nothing, and written nothing.
+    ///
+    /// **That is not the same as returning [`Error::Offline`] from
+    /// [`send_batch`](SyncTransport::send_batch)**, and the difference is the whole reason this
+    /// exists: by the time `send_batch` can answer, the batch has already been read and durably
+    /// marked. Both report `SyncPass::Offline` and both leave every record queued; only this one
+    /// leaves them coalescible.
+    ///
+    /// # Why a second way to say offline
+    ///
+    /// [`OutboxStore::read_for_send`](crate::store::OutboxStore::read_for_send) durably marks the
+    /// batch it returns, and that mark is never cleared, so a pass that reads spends the batch's
+    /// eligibility for
+    /// [`enqueue_coalescing`](crate::store::OutboxStore::enqueue_coalescing) whether or not anything
+    /// reached the network. Without this question a cadence loop polling while offline would burn
+    /// that eligibility on its first tick, and coalescing — whose whole purpose is to collapse edits
+    /// made *while offline* — would almost never engage.
+    ///
+    /// # The failure mode is one-sided, which is why it can be trusted
+    ///
+    /// Answering `true` while actually online costs one skipped pass, which the next one recovers.
+    /// Answering `false` while actually offline costs the batch's coalescibility and nothing else,
+    /// because the runner then goes on to mark before sending. **There is no answer that permits a
+    /// queued body to be rewritten under an identifier the server may already hold**, which is the
+    /// property that lets a safety rule rest on a caller-implemented predicate at all.
+    ///
+    /// # The default is `false`, and that is the honest default
+    ///
+    /// Same shape as [`claim_drain`](crate::store::OutboxStore::claim_drain)'s granted default: an
+    /// implementor that ignores this gets exactly today's behaviour and *no* coalescing, never
+    /// unsafe coalescing. Nothing degrades except a feature that was opt-in to begin with.
+    ///
+    /// Implement it from whatever the platform already knows — `navigator.onLine`, a connectivity
+    /// signal, a circuit breaker the application maintains. It must not perform a request: a probe
+    /// that puts bytes on the wire is the thing this exists to avoid.
+    ///
+    /// # Errors
+    ///
+    /// Whatever consulting the platform's connectivity state can fail with. An implementor with
+    /// nothing to fail returns `Ok(false)`.
+    async fn offline_now(&self) -> Result<bool, Error> {
+        Ok(false)
+    }
 }

@@ -5,7 +5,7 @@ Status: Accepted; D4a built 2026-08-29
 Date: 2026-08-29
 Category: Architecture
 Scope: How to build the requested Dioxus todo application and axum/sqlx server without either overturning the roadmap's D4-before-D5 ordering or demonstrating offline-first against a store that forgets.
-Sources: `wiki/roadmaps/extraction.roadmap.md`, `wiki/proposals/extraction-boundary.proposal.md`, `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/decisions/023-read-model-boundary.decision.md`, `wiki/references/repforge-eight-answers.reference.md`, `src/lib.rs`, `src/runner/drain.rs`, `src/runner/mod.rs`, `src/store.rs`, `src/protocol.rs`, `src/record/mod.rs`, `src/testing/mod.rs`, `crates/frontbox-dioxus/src`, `raw/initial/2026-08-25T083750Z/sources/08-offline-sync.spec.md`, `raw/initial/2026-08-25T083750Z/sources/frontend/dto.rs`
+Sources: `wiki/roadmaps/extraction.roadmap.md`, `wiki/proposals/extraction-boundary.proposal.md`, `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/decisions/023-read-model-boundary.decision.md`, `wiki/references/repforge-eight-answers.reference.md`, `src/lib.rs`, `src/runner/drain.rs`, `src/runner/mod.rs`, `src/store/mod.rs`, `src/protocol.rs`, `src/record/mod.rs`, `src/testing/mod.rs`, `crates/frontbox-dioxus/src`, `raw/initial/2026-08-25T083750Z/sources/08-offline-sync.spec.md`, `raw/initial/2026-08-25T083750Z/sources/frontend/dto.rs`
 Related: `wiki/roadmaps/extraction.roadmap.md`, `wiki/proposals/extraction-boundary.proposal.md`, `wiki/proposals/single-flight-drain.proposal.md`, `wiki/decisions/010-batch-wire-format.decision.md`, `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/019-verdict-synthesis.decision.md`, `wiki/decisions/023-read-model-boundary.decision.md`, `wiki/decisions/026-replayable-preconditions.decision.md`, `wiki/decisions/027-dead-letter-reason.decision.md`, `wiki/decisions/028-drain-loop-boundary.decision.md`, `wiki/decisions/029-drain-termination.decision.md`, `wiki/references/repforge-eight-answers.reference.md`, `wiki/specs/frontbox-runtime.spec.md`
 
 ## 0. Summary
@@ -113,7 +113,7 @@ Falsifiable observations, not features.
 3. **Reload mid-queue and see the work survive.** *This is the observation D4a cannot make.* It is
    the whole reason D4b exists, and owing it openly beats quietly not testing it.
 4. **Make the server refuse one.** It lands in dead letters carrying
-   `DeadLetterReason::Rejected { error: Some(_) }` (`src/store.rs:28`, `src/record/terminal.rs:34`) and the UI
+   `DeadLetterReason::Rejected { error: Some(_) }` (`src/store/mod.rs`, `src/record/terminal.rs:34`) and the UI
    renders the server's message rather than the row vanishing. `dead_letters` rises as `pending`
    falls, the pair `OutboxCounts` documents as meaningful only together
    (`crates/frontbox-dioxus/src/counts.rs:7-9`).
@@ -152,7 +152,7 @@ known in advance, and it is the strongest argument for treating D4a's findings a
 `OperationMeta { name, version }` (`src/record/mod.rs:39`) rides on the intent uninterpreted, which
 is right. But a row rendering "saving…" must answer *is there a queued mutation for row X*, and
 nothing answers that cheaply: `pending_count` and `OutboxCounts` are cardinalities, and
-`pending_batch` (`src/store.rs:93`) is a queue scan per render. The likely outcome is an
+`pending_batch` (`src/store/mod.rs`) is a queue scan per render. The likely outcome is an
 application-owned row-id-to-pending index, which is fine and should be recorded as the supported
 pattern rather than rediscovered by each consumer. The cache side already has the shape it would
 mirror: `InvalidationRunner::stale_classified` attributes conflicts per entity through a

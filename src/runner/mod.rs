@@ -18,6 +18,7 @@ use crate::transport::SyncTransport;
 /// How many records one pass sends by default.
 pub const DEFAULT_BATCH_LIMIT: usize = 100;
 
+mod config;
 mod drain;
 mod exclusion;
 mod report;
@@ -45,64 +46,6 @@ where
     S: OutboxStore,
     T: SyncTransport,
 {
-    /// Build a runner with the default batch limit.
-    pub fn new(store: S, transport: T) -> Self {
-        Self {
-            store,
-            transport,
-            batch_limit: DEFAULT_BATCH_LIMIT,
-            retention_bound: None,
-        }
-    }
-
-    /// Set how many records one pass sends.
-    ///
-    /// A limit of zero would send nothing forever, so it is clamped to one.
-    #[must_use]
-    pub fn with_batch_limit(mut self, limit: usize) -> Self {
-        self.batch_limit = limit.max(1);
-        self
-    }
-
-    /// Dead-letter a record once it has been sent and retained this many times.
-    ///
-    /// **There is no default.** Without a bound, retention is unbounded and a record the server
-    /// never resolves stays queued forever — which is what D1 shipped and what
-    /// `wiki/decisions/005-mutation-outcome-policy.decision.md` argued for at the time. Turning
-    /// this on silently would move work out of the send path without the caller asking.
-    ///
-    /// # When a bound is not optional
-    ///
-    /// At `batch_limit = 1` the window *is* the head, so one permanently retained record freezes
-    /// the whole queue rather than starving a window. Single-flight without a bound is a
-    /// configuration with **no liveness argument**
-    /// (`wiki/decisions/017-bounded-retention.decision.md`).
-    ///
-    /// # What happens at the bound
-    ///
-    /// The record becomes a dead letter carrying **no**
-    /// [`RemoteRejection`](crate::protocol::RemoteRejection), because no server refused it —
-    /// synthesising one would put words in the server's mouth. Its
-    /// [`attempts`](crate::record::DeadLetterRecord::attempts) count is what makes the reason
-    /// legible. The record survives for inspection and requeue; it is never discarded.
-    ///
-    /// A bound of zero would dead-letter on the first retention, so it is clamped to one.
-    #[must_use]
-    pub fn with_retention_bound(mut self, bound: u32) -> Self {
-        self.retention_bound = Some(bound.max(1));
-        self
-    }
-
-    /// The store this runner drives.
-    pub fn store(&self) -> &S {
-        &self.store
-    }
-
-    /// The transport this runner sends through.
-    pub fn transport(&self) -> &T {
-        &self.transport
-    }
-
     /// Run one pass.
     ///
     /// Starting a pass while one is in flight **on this scope** returns
@@ -140,7 +83,9 @@ where
     /// # Errors
     ///
     /// A storage failure, or a transport failure where a request was actually attempted. Being
-    /// offline is not an error: it returns [`SyncPass::Offline`] with the queue untouched.
+    /// offline is not an error: it returns [`SyncPass::Offline`] with every record still queued.
+    /// See that variant for what a pass which never read differs in from one that read and then
+    /// found the network gone.
     pub async fn sync_once(&self) -> Result<SyncReport, Error> {
         // `_claim` rather than `_`: a bare underscore drops the guard here and frees the scope
         // before the pass has run.
@@ -165,11 +110,30 @@ where
     }
 
     async fn run(&self) -> Result<SyncReport, Error> {
+        // Asked before anything is read, because `read_for_send` durably marks what it returns and
+        // that mark is never cleared. A client that already knows it is offline would otherwise
+        // spend the head batch's coalescing eligibility on every poll, for a pass that was never
+        // going to reach the network — and coalescing exists to collapse edits made *while
+        // offline*, so that is the whole feature (`src/transport.rs`).
+        //
+        // Ahead of `sweep_corrupt` as well as the read, so an offline pass writes nothing at all.
+        // A corrupt row stays invisible for one more pass, which is the window `sweep_corrupt`'s
+        // contract already describes; it is not made worse by declining to run while offline, and
+        // the next connected pass closes it.
+        if self.transport.offline_now().await? {
+            return Ok(SyncReport::ended(SyncPass::Offline));
+        }
+
         // Corrupt rows are found before the batch is built, so an undecodable record becomes
         // visible in quarantine rather than being silently skipped on every pass forever.
         let quarantined = self.store.sweep_corrupt().await?;
 
-        let records = self.store.pending_batch(self.batch_limit).await?;
+        // Not `pending_batch`: this marks every record it returns as transport-started, in its own
+        // transaction, before the request below exists. Deriving that fact afterwards from how the
+        // send failed cannot be done — `Error::Offline` covers a browser `fetch` that fails for
+        // lack of connectivity, which is indistinguishable from one the server answered into a lost
+        // response (`wiki/proposals/queued-write-coalescing.proposal.md`).
+        let records = self.store.read_for_send(self.batch_limit).await?;
         if records.is_empty() {
             let mut report = SyncReport::ended(SyncPass::Idle);
             report.quarantined = quarantined;

@@ -5,7 +5,7 @@ Status: Accepted 2026-08-30; implemented same day
 Date: 2026-08-30
 Category: Public API Shape
 Scope: How a dead letter records the reason it was parked, and why a nullable rejection payload was the wrong encoding for it.
-Sources: `src/record/terminal.rs`, `src/store.rs`, `src/runner/mod.rs`, `wiki/references/repforge-eight-answers.reference.md`
+Sources: `src/record/terminal.rs`, `src/store/mod.rs`, `src/runner/mod.rs`, `wiki/references/repforge-eight-answers.reference.md`
 Related: `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/012-unknown-mutation-status.decision.md`, `wiki/decisions/002-error-model.decision.md`, `wiki/decisions/019-verdict-synthesis.decision.md`
 
 ## Decision

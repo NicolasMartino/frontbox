@@ -230,6 +230,39 @@ macro_rules! frontbox_row_tests_async {
     };
 }
 
+/// Emit the queued-write coalescing cases as blocking tests.
+///
+/// Separate from [`frontbox_conformance_tests`](crate::frontbox_conformance_tests) for the reason
+/// [`frontbox_row_tests`](crate::frontbox_row_tests) is: coalescing is opt-in and adds two required
+/// [`OutboxStore`](crate::store::OutboxStore) methods, so a backend that has not ported them leaves
+/// a visible gap in its test file instead of failing the whole suite for one missing feature.
+#[macro_export]
+macro_rules! frontbox_coalescing_tests {
+    ($(#[$attr:meta])* factory: $factory:expr, block_on: $block_on:path $(,)?) => {
+        $crate::__frontbox_coalescing_suite! {
+            run: { block_on: $block_on },
+            attr: [$(#[$attr])*],
+            factory: $factory,
+        }
+    };
+}
+
+/// Emit the queued-write coalescing cases as `async` tests.
+///
+/// The async counterpart of [`frontbox_coalescing_tests`](crate::frontbox_coalescing_tests). An
+/// IndexedDB backend needs this one: both new methods have to do their read and their write inside
+/// a single transaction, and a transaction there closes the moment the event loop yields.
+#[macro_export]
+macro_rules! frontbox_coalescing_tests_async {
+    ($(#[$attr:meta])* factory: $factory:expr $(,)?) => {
+        $crate::__frontbox_coalescing_suite! {
+            run: { asynchronous },
+            attr: [$(#[$attr])*],
+            factory: $factory,
+        }
+    };
+}
+
 /// Emit the cases that require a **synchronous** backend.
 ///
 /// There is deliberately no `_async` counterpart, and that absence is the point.

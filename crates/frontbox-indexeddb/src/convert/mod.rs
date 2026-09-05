@@ -20,12 +20,41 @@
 //! `seq` keeps its `skip_serializing_if`, because that is a live mechanism rather than a tolerance:
 //! the key is omitted on insert so IndexedDB's `autoIncrement` generator supplies it, and it is
 //! written back into the object since the store's key path is `seq`.
+//!
+//! # The one exception, and what bounds it
+//!
+//! `OutboxRow::transport_started` carries `#[serde(default = "assume_transport_started")]`, and it
+//! is the only field in this crate that may.
+//!
+//! The rule above rests on a premise this field retired: "this crate has never shipped [a different
+//! schema], so no such row exists anywhere". Adding a field to a durable row is what makes one
+//! exist. A stored object written before this feature has no `transport_started` key, and it is on
+//! a user's device already.
+//!
+//! **A `default` is admissible exactly when the defaulted value is the conservative one — the value
+//! that turns a feature off.** This one defaults to `true`, meaning "assume the server may already
+//! hold this identifier", so a row missing the key becomes non-coalescible while staying perfectly
+//! resendable. That is degradation, and it is the same answer a future rename would produce.
+//! Contrast `precondition`, the field the rule was written about: absent there means conflict
+//! detection silently stops, which is loss.
+//!
+//! The next field addition has to make this argument again rather than cite the precedent. A
+//! `default` whose value would *enable* something — `attempts: 0` on a row that has been retried,
+//! `stale: false` on a row that is not — remains exactly as forbidden as before.
+//!
+//! No version bump goes with it. `VERSION` moves to create object stores inside `onupgradeneeded`
+//! (`crates/frontbox-indexeddb/src/backend.rs`); this adds no store and no index, and rewriting
+//! every stored object to add a key whose absence already reads correctly would be the expensive
+//! kind of migration bought for nothing.
 
 use frontbox::{
-    DeadLetterReason, DeadLetterRecord, MutationId, MutationIntent, OperationMeta, OutboxRecord,
-    QuarantinedRecord, RowRef, ScopeKey, StoredRow,
+    MutationId, MutationIntent, OperationMeta, OutboxRecord, QuarantinedRecord, RowRef, ScopeKey,
 };
 use serde::{Deserialize, Serialize};
+
+mod terminal;
+
+pub(crate) use terminal::{DeadLetterRow, QuarantineRow, RowRecord};
 use wasm_bindgen::JsValue;
 
 use crate::request::js_error;
@@ -43,7 +72,7 @@ use crate::request::js_error;
 ///
 /// Text round-trips exactly, at the cost of a parse. Core's own rule that `mutation_id` is stored
 /// in one textual form is the same trade for the same reason.
-mod i64_text {
+pub(super) mod i64_text {
     use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(value: &i64, serializer: S) -> Result<S::Ok, S::Error> {
@@ -77,6 +106,21 @@ pub(crate) struct OutboxRow {
     pub row_id: Option<String>,
     pub attempts: u32,
     pub last_error: Option<String>,
+    /// Whether the server may already hold this row's identifier.
+    ///
+    /// Set by `read_for_send`, and by `apply_outcomes` applying a `Retain`. See the module docs for
+    /// why this is the one field in the crate carrying a `serde` default, and what bounds that
+    /// exception.
+    #[serde(default = "assume_transport_started")]
+    pub transport_started: bool,
+}
+
+/// What a stored row with no `transport_started` key means.
+///
+/// `true`: the row predates the field, and the only safe reading of "we cannot tell whether this was
+/// sent" is that it was.
+fn assume_transport_started() -> bool {
+    true
 }
 
 impl OutboxRow {
@@ -99,6 +143,7 @@ impl OutboxRow {
             row_id: intent.row.as_ref().map(|row| row.row_id.clone()),
             attempts: 0,
             last_error: None,
+            transport_started: false,
         })
     }
 
@@ -179,193 +224,6 @@ impl OutboxRow {
             Some(op) => record.with_op(op),
             None => record,
         }
-    }
-}
-
-/// One dead letter, as IndexedDB holds it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct DeadLetterRow {
-    pub scope: String,
-    pub mutation_id: String,
-    pub method: String,
-    pub path: String,
-    pub raw_body: String,
-    #[serde(with = "i64_text")]
-    pub created_at: i64,
-    pub op_name: Option<String>,
-    pub op_version: Option<String>,
-    pub traceparent: Option<String>,
-    pub precondition: Option<String>,
-    pub attempts: u32,
-    #[serde(with = "i64_text")]
-    pub rejected_at: i64,
-    pub reason_kind: String,
-    pub reason_body: Option<String>,
-}
-
-impl DeadLetterRow {
-    pub fn from_record(record: &DeadLetterRecord) -> Result<Self, frontbox::Error> {
-        let (kind, body) = match &record.reason {
-            DeadLetterReason::Rejected { error } => (
-                "rejected",
-                error
-                    .as_ref()
-                    .and_then(|error| serde_json::to_string(error).ok()),
-            ),
-            DeadLetterReason::RetentionBound => ("retention_bound", None),
-            DeadLetterReason::Caller(reason) => ("caller", Some(reason.clone())),
-            // `#[non_exhaustive]`: a variant added later is stored under a discriminant saying so,
-            // rather than flattened into one this backend happens to know.
-            other => ("unknown", Some(format!("{other:?}"))),
-        };
-        Ok(Self {
-            scope: record.scope.as_str().to_owned(),
-            mutation_id: record.mutation_id.to_string(),
-            method: record.method.clone(),
-            path: record.path.clone(),
-            raw_body: serde_json::to_string(&record.body)
-                .map_err(frontbox::Error::serialization)?,
-            created_at: record.created_at,
-            op_name: record.op.as_ref().map(|op| op.name.clone()),
-            op_version: record.op.as_ref().and_then(|op| op.version.clone()),
-            traceparent: record.traceparent.clone(),
-            precondition: record.precondition.clone(),
-            attempts: record.attempts,
-            rejected_at: record.rejected_at,
-            reason_kind: kind.to_owned(),
-            reason_body: body,
-        })
-    }
-
-    /// Rebuild the record, through `stamp` and `from_record` because decision 008 blocks literals.
-    pub fn decode(&self, scope: &ScopeKey) -> Option<DeadLetterRecord> {
-        let mut intent = MutationIntent::new(
-            self.mutation_id.parse::<MutationId>().ok()?,
-            &self.method,
-            &self.path,
-            serde_json::from_str(&self.raw_body).ok()?,
-            self.created_at,
-        );
-        if let Some(name) = self.op_name.clone() {
-            let meta = OperationMeta::new(name);
-            intent = intent.with_op(match self.op_version.clone() {
-                Some(version) => meta.with_version(version),
-                None => meta,
-            });
-        }
-        if let Some(traceparent) = self.traceparent.clone() {
-            intent = intent.with_traceparent(traceparent);
-        }
-        if let Some(precondition) = self.precondition.clone() {
-            intent = intent.with_precondition(precondition);
-        }
-        let mut record = OutboxRecord::stamp(intent, scope.clone(), 0);
-        record.attempts = self.attempts;
-
-        let reason = match self.reason_kind.as_str() {
-            "rejected" => DeadLetterReason::Rejected {
-                error: self
-                    .reason_body
-                    .as_ref()
-                    .and_then(|body| serde_json::from_str(body).ok()),
-            },
-            "retention_bound" => DeadLetterReason::RetentionBound,
-            "caller" => DeadLetterReason::Caller(self.reason_body.clone().unwrap_or_default()),
-            other => DeadLetterReason::Caller(format!("unrecognised reason {other:?}")),
-        };
-        Some(DeadLetterRecord::from_record(
-            record,
-            self.rejected_at,
-            reason,
-        ))
-    }
-}
-
-/// One quarantined row, as IndexedDB holds it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct QuarantineRow {
-    pub scope: String,
-    pub raw_mutation_id: String,
-    pub method: String,
-    pub path: String,
-    pub raw_body: String,
-    #[serde(with = "i64_text")]
-    pub created_at: i64,
-    pub op_name: Option<String>,
-    pub op_version: Option<String>,
-    pub reason: String,
-    #[serde(with = "i64_text")]
-    pub quarantined_at: i64,
-}
-
-impl QuarantineRow {
-    pub fn from_record(record: &QuarantinedRecord) -> Self {
-        Self {
-            scope: record.scope.as_str().to_owned(),
-            raw_mutation_id: record.raw_mutation_id.clone(),
-            method: record.method.clone(),
-            path: record.path.clone(),
-            raw_body: record.raw_body.clone(),
-            created_at: record.created_at,
-            op_name: record.op.as_ref().map(|op| op.name.clone()),
-            op_version: record.op.as_ref().and_then(|op| op.version.clone()),
-            reason: record.reason.clone(),
-            quarantined_at: record.quarantined_at,
-        }
-    }
-
-    pub fn decode(&self, scope: &ScopeKey) -> QuarantinedRecord {
-        let record = QuarantinedRecord::from_raw(
-            self.raw_mutation_id.clone(),
-            self.method.clone(),
-            self.path.clone(),
-            self.raw_body.clone(),
-            self.created_at,
-            scope.clone(),
-            self.reason.clone(),
-            self.quarantined_at,
-        );
-        match self.op_name.clone() {
-            Some(name) => {
-                let meta = OperationMeta::new(name);
-                record.with_op(match self.op_version.clone() {
-                    Some(version) => meta.with_version(version),
-                    None => meta,
-                })
-            }
-            None => record,
-        }
-    }
-}
-
-/// One read-model row, as IndexedDB holds it.
-///
-/// `blob` is stored as a JSON string rather than a structured value on purpose: core promises never
-/// to read it, and a structured clone would let IndexedDB's own type rules reshape what the
-/// application stored — a `Map` coming back where an object went in, say. Text round-trips exactly.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct RowRecord {
-    pub scope: String,
-    pub entity: String,
-    pub row_id: String,
-    pub blob: String,
-    pub stale: bool,
-}
-
-impl RowRecord {
-    pub fn from_stored(stored: &StoredRow, scope: &ScopeKey) -> Result<Self, frontbox::Error> {
-        Ok(Self {
-            scope: scope.as_str().to_owned(),
-            entity: stored.row.entity.clone(),
-            row_id: stored.row.row_id.clone(),
-            blob: serde_json::to_string(&stored.blob).map_err(frontbox::Error::serialization)?,
-            stale: stored.stale,
-        })
-    }
-
-    pub fn decode(&self) -> StoredRow {
-        let blob = serde_json::from_str(&self.blob).unwrap_or(serde_json::Value::Null);
-        StoredRow::new(RowRef::new(&self.entity, &self.row_id), blob).with_stale(self.stale)
     }
 }
 

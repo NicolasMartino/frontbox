@@ -5,7 +5,7 @@ Status: Accepted 2026-08-27; implemented 2026-08-29
 Date: 2026-08-27
 Category: Sync Semantics
 Scope: What stops a record that is retained on every pass from being retained forever, and what happens at the bound.
-Sources: `src/runner/mod.rs`, `src/store.rs`, `src/record/mod.rs`, `wiki/references/prior-art-survey.reference.md`, `wiki/references/repforge-single-flight-proposal.reference.md`
+Sources: `src/runner/mod.rs`, `src/store/mod.rs`, `src/record/mod.rs`, `wiki/references/prior-art-survey.reference.md`, `wiki/references/repforge-single-flight-proposal.reference.md`
 Related: `wiki/decisions/020-observability-surface.decision.md`, `wiki/decisions/005-mutation-outcome-policy.decision.md`, `wiki/decisions/012-unknown-mutation-status.decision.md`, `wiki/decisions/016-monotonic-enqueue-sequence.decision.md`, `wiki/decisions/018-single-flight-drain-mode.decision.md`, `wiki/decisions/004-transport-auth-and-offline.decision.md`, `wiki/proposals/single-flight-drain.proposal.md`
 
 ## Decision

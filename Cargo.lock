@@ -1852,6 +1852,7 @@ dependencies = [
  "pollster",
  "rusqlite",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

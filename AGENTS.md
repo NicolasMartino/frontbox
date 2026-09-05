@@ -13,8 +13,13 @@ framework and storage adapters. The core deliberately carries no Dioxus dependen
 **Current stage: D1 through D5 and D4d are built.** D1 2026-08-26, D2 2026-08-27, D3a/D3b/D4a
 2026-08-29, D4b/D4c/D5 2026-08-30, **D4d 2026-08-31** — and D5's last owed proof line was met the
 same day: the two-realm drain is observed by a browser fixture rather than argued from a
-single-realm test. Every deliverable with a plan is built and none is carrying an unwitnessed
-promise. **D6** has no plan.
+single-realm test. Every *deliverable* with a plan is built and none is carrying an unwitnessed
+promise. **D6** has no plan. `wiki/plans/queued-write-coalescing.plan.md` sits outside the D0-D6
+sequence — it answers an external request rather than a roadmap step — and was built 2026-09-05
+(decision 044), then reviewed twice the same day. The first review found a real safety bypass, now
+conformance case 80. The second found no defect and a public contract that had not caught up with
+the first fix; the eligibility rule is the durable `transport_started` mark with both of its writers
+named, and conformance covers cases 70-82.
 
 The repository is a Cargo workspace: the root package is `frontbox`, plus `crates/frontbox-dioxus`,
 `crates/frontbox-sqlite`, `crates/frontbox-indexeddb`, and the four trial crates

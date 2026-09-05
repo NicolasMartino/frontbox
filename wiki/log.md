@@ -2,7 +2,7 @@
 
 ## Index
 
-Seventy-eight entries. **This file is in append order, which is not always date order**: the D3 and D4a
+Eighty-four entries. **This file is in append order, which is not always date order**: the D3 and D4a
 entries carry 2026-08-29 and were written after several 2026-08-30 ones, because those tracks were
 logged when they closed rather than when they started. The order is left as written — an
 append-only record's sequence is itself information, and re-sorting it would replace *when this was
@@ -19,7 +19,8 @@ recorded* with *when it happened*, losing the first to state the second twice.
 | 2026-08-31 | invalidation delivery, and the boundary that outlived its reason (037, 038, D4d) · **whole-worktree review: two cross-backend divergences and stale docs** · **D5 closed: the two-realm drain observed** · **D4d: two domains, one queue, and the first invalidation that ever ran** |
 | 2026-09-01 | **legacy sweep: dead schema tolerances, the handle surface, and a gate with a hole in it** · **decision 032 amended: the row loses its two stamps** · **containers rebuilt from scratch; a silent port trap removed** · **nested user→todo CRUD, and decision 039's delete cascade** · **driving the UI in a browser: three defects, one of them in the IndexedDB backend** · **a justfile, and the trial run on all four platforms** · **browser invalidation: stale rows and cross-tab polling** |
 | 2026-09-02 | Four-platform lifecycle re-verification · two external reviews · a file-by-file pass · dead-code sweep and stale references |
-| 2026-09-05 | RepForge queued-write coalescing request recorded · proposed safe frontbox contract · implementation plan drafted |
+| 2026-09-06 | **cache versions documented as optional, after an adopter's wrong turn** |
+| 2026-09-05 | RepForge queued-write coalescing request recorded · proposed safe frontbox contract · implementation plan drafted · **review of the coalescing commit: the offline release rule, the silent unbound drop, and two migrations that could not run** · **queued-write coalescing built on all three backends (decision 044)** · trial adopts it: observations 15-17b · **external review: a real bypass of the safety mark, fixed with case 80** · **second review: the contract had not caught up with the fix (cases 81, 82)** |
 
 ## [2026-08-25] ingest | bootstrap
 
@@ -3885,3 +3886,329 @@ and IndexedDB. The plan adds public coalescing outcome types, durable `in_flight
 changes, and conformance cases for replacement, refusal, migration, and attempted-send safety.
 
 Pages affected: `wiki/plans/queued-write-coalescing.plan.md`, `wiki/index.md`, `wiki/log.md`
+
+## [2026-09-05] revise | queued-write coalescing review corrections
+
+Reviewed the coalescing commit against the code it cites and rewrote the proposal and the plan. The
+`attempts == 0` correction held; three things below it did not.
+
+**The offline release rule reproduced the bug it was written to fix.** The plan released a pass
+ending in `Error::Offline` with `transport_started` still false, so an offline application could
+keep coalescing. But `src/transport.rs` tells implementors to return `Offline` when a browser
+`fetch` fails for lack of connectivity, and such a `fetch` rejects identically whether the request
+never left the device or reached the server and lost its response. The trace: edit 1 sends, the
+server applies it, the response is lost, the flag stays false, edit 2 coalesces into the same
+`mutation_id`, the next send is deduped as `Duplicate`, and edit 2 is deleted having never been
+applied. Inferring "never sent" from how a send failed is the same error as inferring it from
+`attempts`, one layer out.
+
+The fix moves the fact ahead of the request: one durable `transport_started`, written inside the
+transaction that reads the batch, never cleared. That deleted `in_flight`, the three-way release
+taxonomy, and the abandoned-row recovery pass, all of which existed only to serve the unsound rule —
+and it dissolved a second finding with them, that a cancelled `use_future` on Dioxus would strand
+in-flight rows. Marking before the send costs the motivating scenario unless the runner can decline
+to read while offline, so `SyncTransport` gains an `is_offline` probe whose failure mode is
+one-sided: a wrong "online" costs coalescibility, and no answer it can give permits an unsafe
+rewrite.
+
+**`AppendIfMissing` returned `NotQueued` for an intent with no `RowRef`** — `Ok(..)` for a write that
+was silently dropped, which is the failure decision 006 exists to refuse. It now appends in every
+non-replacement case and can no longer return `NotQueued` at all.
+
+**Both durable migrations were one line describing work the backends cannot do.**
+`crates/frontbox-sqlite/src/schema.rs` is a single `CREATE TABLE IF NOT EXISTS` with no
+`user_version`, no `ALTER TABLE`, and no migration step anywhere in the crate, so "adds both columns"
+is that crate's first schema-versioning mechanism. `crates/frontbox-indexeddb/src/convert.rs`
+forbids `#[serde(default)]` on durable rows by name, so the plan's read-side default needed an
+argued exception rather than silence — admissible here because the defaulted value is the
+conservative one, which is the boundary now written into the plan. Both migrations shrank to
+metadata: one nullable column, one defaulted field, no walk over user data.
+
+Also corrected: replacement now takes `body`, `op`, `traceparent`, and `created_at` from the new
+intent and keeps only `seq`, `mutation_id`, and `precondition`, because the first four describe a
+body that is being replaced and `op` is what a human reads off a dead letter; the partial-update
+hazard is stated, since a caller using `RequireExisting` cannot know the body it is discarding;
+neither new `OutboxStore` method may be defaulted, unlike `claim_drain`, whose granted default is
+correct rather than merely permissive; and `read_for_send` must read and mark in one transaction,
+or a replacement landing between the two lets the server's verdict delete a body that was never
+sent.
+
+**Three pages claimed "every deliverable with a plan is built"**, which the new plan falsified the
+moment it landed — the failure the roadmap's own Sequencing Principle describes. All three now say
+the sentence is about the D0-D6 sequence and name the coalescing plan as sitting outside it,
+unbuilt and unauthorized.
+
+Pages affected: `wiki/proposals/queued-write-coalescing.proposal.md`,
+`wiki/plans/queued-write-coalescing.plan.md`,
+`wiki/references/repforge-queued-write-coalescing-request.reference.md`,
+`wiki/roadmaps/extraction.roadmap.md`, `AGENTS.md`, `wiki/index.md`, `wiki/log.md`
+
+## [2026-09-05] build | queued-write coalescing on all three backends
+
+Authorized and built the same day the plan was corrected. `OutboxStore` gains `enqueue_coalescing`
+and `read_for_send`, `SyncTransport` gains `offline_now`, and the three public types
+`CoalescingPolicy`, `CoalescingEnqueue`, and `CoalescingRefusal` are exported. Decision 044 carries
+the argument.
+
+**One durable boolean, written before the request.** `transport_started` is set inside the
+transaction that reads a batch for sending and never cleared, so no failure has to be classified
+afterwards. That is what the earlier design got wrong twice over — RepForge's `attempts == 0`, then
+frontbox's own reading of `Error::Offline` — and recording the fact ahead of the request deleted the
+`in_flight` flag, the three-way release taxonomy, and the crash-recovery pass along with the bug.
+`offline_now` keeps the feature useful: asked before the runner reads, so an offline application
+does not spend its own coalescibility polling, and one-sided by construction, so no answer it can
+give permits an unsafe rewrite.
+
+**Two renames and one guard changed from the plan as written.** The probe is `offline_now`, not
+`is_offline` — `Error::is_offline` already asks a different question, and two `is_offline` meaning
+two things is a name a reader disambiguates every time. And SQLite's migration is guarded by
+`PRAGMA table_info` rather than by `user_version` alone: a fresh database gets the column from the
+schema batch while still reporting version zero, so a version-only guard would fail on the first
+open of every new database.
+
+**The two durable backends cost what the review said they would.** SQLite gained its first
+schema-versioning mechanism — there was no `user_version`, no `ALTER TABLE`, and no migration step
+anywhere in the crate, so `CREATE TABLE IF NOT EXISTS` would have left every existing database
+without the column and every statement naming it failing. The column is nullable and carries no
+`DEFAULT`, which keeps `schema.rs`'s stated rule intact and makes the migration DDL-only. IndexedDB
+needed no version bump but did need the crate's one exception to its ban on `#[serde(default)]` for
+durable rows, with the bound written into the module doc: a default is admissible exactly when the
+defaulted value is the conservative one.
+
+Four files passed the four-hundred-line cap and were split: `src/store.rs` into a directory with
+`coalescing`, `terminal`, and `rows`; `src/runner/config.rs` out of the runner;
+`crates/frontbox-sqlite/src/coalescing.rs` and `crates/frontbox-indexeddb/src/coalescing.rs` out of
+their stores; and `crates/frontbox-indexeddb/src/convert.rs` into a directory. The cited-paths gate
+caught twenty-one wiki citations left pointing at the two renamed files, which is exactly the rot it
+was written for.
+
+Proof: cases 70-79 green on all three backends — in-memory and SQLite natively, IndexedDB in
+headless Chrome against a downloaded driver matching the installed browser — plus a SQLite case that
+builds a pre-migration database by hand and asserts its rows still send and refuse to be rewritten.
+`./scripts/verify.sh` reports ALL GATES PASSED with the browser gate run rather than skipped, and
+coverage at 89.87% lines / 94.41% functions.
+
+Not done: the trial crates still use the default `offline_now`, so the probe has no end-to-end
+witness in `examples/`. RepForge's own adoption — deleting the profile form's second-write refusal —
+is theirs.
+
+Pages affected: `wiki/decisions/044-transport-started-before-the-request.decision.md`,
+`wiki/specs/frontbox-runtime.spec.md`, `wiki/proposals/queued-write-coalescing.proposal.md`,
+`wiki/plans/queued-write-coalescing.plan.md`, `wiki/roadmaps/extraction.roadmap.md`, `AGENTS.md`,
+`wiki/index.md`, `wiki/log.md`, and the twenty-one pages whose `src/store.rs` and
+`crates/frontbox-indexeddb/src/convert.rs` citations were repointed
+
+## [2026-09-05] build | the trial adopts queued-write coalescing
+
+Closes the gap the previous entry named: it recorded that "the trial crates still use the default
+`offline_now`, so the probe has no end-to-end witness in `examples/`". They do now.
+
+`examples/todo-core` gained `TodoApp::rename_coalescing` **beside** the existing `rename` rather
+than in place of it. Keeping both is the point — a trial carrying only the coalescing path could
+show the feature working and not what it changes, and the difference between one queued write and
+two is the whole claim. `HttpTransport` implements `offline_now` from the offline switch it already
+had, which is the easy case for the probe and the one worth showing: the plug is known to be out, so
+there is nothing to infer and no request to attempt.
+
+Four observations against the real axum/sqlx server, which does not depend on `frontbox` and so
+counts what actually crossed the wire rather than what the client believed it sent:
+
+- **15** — two offline renames of one row reach the server as one recorded mutation, carrying the
+  later title.
+- **16** — the plain `rename` path still queues both and the server records two. Without this, 15 is
+  measured against nothing. Both end in the same title, so what coalescing buys is the request that
+  never happened, not a different answer.
+- **17** — an offline poll between the two renames does not spend coalescibility. This is the
+  observation that justifies `offline_now` existing: without it the poll would mark the queued
+  rename read-for-sending and the second would append.
+- **17b** — a poll that did reach transport *does* spend it, and the second rename appends. The case
+  that must keep refusing to collapse, or the feature would be unsafe.
+
+`examples/todo-app`'s rename switched to the coalescing path, and its `onchange`-not-`oninput`
+comment — which named a queued write per keystroke as the reason for the choice — now says why the
+choice stands anyway: coalescing collapses repeated edits between drains, and stops the moment a
+drain reads the record.
+
+**Two things this does not prove, both recorded in the plan rather than left to be found.**
+`RequireExisting` has no end-to-end witness: this trial sends no preconditions, RepForge's
+server-assigned `updated_at` has no analogue in a todo list, and a fixture built to produce one would
+be flattering the feature rather than exercising an application that needed it. And the
+`examples/todo-app` change is proven by clippy and two wasm builds and nothing else, because that
+crate has no tests — the same seam Finding 6 of the D4a plan records, where both halves were green
+and nothing looked at the join.
+
+Also found: **the cited-paths gate reads `git ls-files`, so it never scanned any of the new
+untracked files.** The first ALL GATES PASSED of the day was therefore weaker than it looked. Staging
+the new files and re-running is what made it mean what it says, and it caught a fabricated path in
+`examples/todo-core/src/app/coalescing.rs` that had been sitting green.
+
+Pages affected: `wiki/plans/queued-write-coalescing.plan.md`, `wiki/specs/frontbox-runtime.spec.md`,
+`wiki/log.md`
+
+## [2026-09-05] revise | coalescing review: one real hole, and what the review missed
+
+An external review scored every file and returned one High, three Mediums and a Low. Checked each
+against the code rather than taken on trust. **The High is real and was a genuine safety bug.**
+
+`read_for_send` was treated as the only way a record reaches the server. It is not:
+`apply_outcomes` is public, and `OutboxStore`'s own contract says a backend "cannot assume the runner
+is its only caller". A direct caller could read with `pending_batch`, send the batch through its own
+transport, and apply a `Retain` — leaving `attempts` incremented and `transport_started` false, so
+the record still read as coalescible after the server had certainly seen it. The next edit would then
+rewrite its body under an identifier the server dedupes against, and the newer body would be deleted
+without ever being applied. Exactly the failure this feature was designed to prevent, reached through
+the one door the implementation had not checked.
+
+The rule that closes it is the same reasoning the rest of the design already rests on rather than a
+patch on top: **a `Retain` is a verdict, and a verdict cannot exist without a request.** All three
+backends now set the mark there too. Conformance case 80 was written before the fix and confirmed
+failing on in-memory, then on SQLite, then verified green on all three including IndexedDB in a
+browser.
+
+Two of the three Mediums were also right. Several public comments still described `Offline` as
+leaving work untouched, which is now true of the queue's contents and false of the durable mark —
+and `SyncTransport::offline_now` claimed to produce "the same result as returning `Error::Offline`"
+two paragraphs above explaining why it does not, which is the most embarrassing kind of stale doc:
+self-contradictory inside one comment. And SQLite stamped `user_version` unconditionally, so an older
+binary opening a newer database wrote the marker backwards; it now only moves forward, with a test
+mutation-checked to fail without the guard.
+
+The third Medium was not a defect. The review read the wiki's "browser gate run rather than skipped"
+as an overclaim because its own `verify.sh` run skipped that gate for want of `CHROMEDRIVER`. The run
+did happen — but the page asserted it without saying how, which made it unreproducible and therefore
+indistinguishable from an overclaim. Fixed by naming the method: `just chromedriver` then
+`just browser`, two recipes this repository already carried and that the earlier work reimplemented
+by hand instead of finding.
+
+**Three things the review missed**, found while checking it:
+
+- `sweep_corrupt` no longer runs on every pass — one that ends at `offline_now` touches storage not
+  at all — so its contract's promise that "an application that syncs at all closes the window on its
+  own" is now bounded by connectivity rather than by the poll interval. The doc says so.
+- `SyncPass::Offline` now covers two report shapes: everything zero when the probe answered,
+  everything counted when the send did. Documented on the variant.
+- `StoreOp` carries no `#[non_exhaustive]` while every other public enum here does, and this work
+  added two variants to it. Deliberately left alone — adding the attribute is an unrequested
+  public-API change and the present risk is nil at `publish = false` — but recorded rather than
+  overlooked.
+
+The Low was correct and needed nothing: `.serena/` is local tool state and stays untracked.
+
+Also worth keeping: **the first ALL GATES PASSED of the day did not cover the new files.** The
+cited-paths gate reads `git ls-files`, so anything untracked is invisible to it. Staging before
+running is what makes that gate mean what it says.
+
+Pages affected: `wiki/decisions/044-transport-started-before-the-request.decision.md`,
+`wiki/plans/queued-write-coalescing.plan.md`, `wiki/log.md`
+
+## [2026-09-05] revise | second coalescing review: the contract had not caught up with the fix
+
+A follow-up review of the staged feature. **No correctness defect survived** — the `apply_outcomes`
+bypass is genuinely closed on all three backends and case 80 pins it. What it found instead was a
+gap between the fixed behaviour and the prose describing it, which is worth logging because of the
+shape rather than the size.
+
+**The public contract still defined coalescing eligibility as "not read for sending."** That was true
+before the bypass fix and false after it: `apply_outcomes` applying a `Retain` now sets the mark too,
+because a verdict cannot exist without a request. So the trait doc, the refusal variant, and the
+spec's behaviour table were all describing a rule the code had outgrown. Nothing was broken by it
+*today*, and that is exactly what makes it worth fixing — a backend written against the doc rather
+than against the suite would have reintroduced the hole case 80 exists to catch. Eligibility is now
+named as one durable fact, `transport_started`, with both of its writers stated wherever it appears.
+
+**Offline wording still led with a claim nobody can make.** Five places said "no request reached the
+server" or "no request could be attempted", which decision 044 spends a whole section explaining is
+unknowable: a browser `fetch` rejects identically whether the request never left or its response was
+lost. They now lead with what is actually known — the transport *reported* the network unavailable —
+and say that the weaker phrasing is deliberate. `Reply::Offline` in the scripted transport was the
+sharpest case: it is produced by a `send_batch` that was *called*, so "no request could be attempted"
+was not merely imprecise but backwards.
+
+**Two runner regressions the plan asked for did not exist.** Now cases 81 and 82: an attempted
+transport failure, and a response that omits the record's verdict. Both had been left implicit on the
+grounds that they resemble cases 79 and 80, and writing them showed that reasoning was sloppy — the
+five no-verdict paths take *three* different values of `attempts` (0 for the probe, offline and
+transport failure; 1 for an omitted verdict, which decision 019 synthesizes into a `Retain`; 1 for a
+direct `Retain`) while agreeing exactly on the mark. That divergence is the argument for
+`transport_started` being a stored fact rather than a derived one, and until now nothing tested it.
+
+**One finding was wrong, and the correction is recorded so it is not "fixed" back.** The review read
+the spec's "78 cases" as stale and asked for 80, reasoning from the existence of case 80. Case
+numbering is global and stable — a case keeps its number when it moves file, case 30 is blocking-only
+and case 45 no longer exists — so the count and the highest number were never the same quantity. With
+81 and 82 added the count is 80 and the highest number is 82, and the spec now says so in as many
+words rather than leaving a coincidence to be misread again.
+
+Smaller things from its per-file notes, taken because they were right: IndexedDB's `read_for_send`
+now returns early on a zero limit instead of opening a read-write transaction and scanning the store
+to discover it has nothing to do — which was blocking a concurrent `enqueue_coalescing` for the
+length of a scan that could never write. SQLite's replacement `UPDATE` now checks it matched exactly
+one row; it cannot fail today, and the reason to check is that the alternative to a loud failure is
+a silent `Replaced` for a row that was never written. `crate::lib` states what adding a *required*
+trait method means for external backend implementors, and why both of coalescing's new methods are
+required rather than defaulted: a default that appended instead of replacing, or one that fell back
+to `pending_batch`, would silently skip the mark the safety rests on. The stale "IndexedDB is D5 and
+does not exist yet" comment in `tests/in_memory.rs` now says what that compiled-not-run suite is
+still *for*, which is that the browser gate is the one most likely to be absent on the machine where
+an async-wrapper mistake is made.
+
+Two of its per-file notes were declined with reasons. SQLite's `seq`/`attempts` widening casts stay
+casts — `AUTOINCREMENT` issues only increasing positives and `attempts` is written solely as `0` and
+`attempts + 1`, so a negative means the file was edited by something other than this crate, and
+erroring on a *read* would let one tampered row wedge a healthy queue, which decision 006 exists to
+refuse. The argument and the fix-if-it-changes are now written where the cast is. And the in-memory
+`enqueue_coalescing`'s branch density stays: the nesting is what makes the `RefCell` borrow scope
+visible, and that borrow not outliving the match is the property the comment above it is about.
+
+Pages affected: `wiki/plans/queued-write-coalescing.plan.md`,
+`wiki/specs/frontbox-runtime.spec.md`, `wiki/decisions/044-transport-started-before-the-request.decision.md`,
+`wiki/index.md`, `wiki/log.md`
+
+## [2026-09-06] create | cache versions are optional, and the docs said otherwise
+
+RepForge reported a wrong turn, and it is the useful kind: not "this API is awkward" but "I did a
+thing that cost me time, and here is what would have prevented it". They opened a `CacheVersionStore`
+handle while integrating, **because the reference application did**, and removed it later on
+realising nothing in their application read it. Nothing broke. What it cost was a detour and a
+belief — that invalidation is part of the shape you adopt.
+
+**The belief was our fault, and it was purely a documentation fault.** Versions have been optional
+since they were built, in every structural sense that matters: a separate trait in `src/cache/store.rs`
+sharing no method with `OutboxStore`, a separate type in every backend, and a separate conformance
+suite whose macro doc already said a backend without a version store simply does not invoke it. None
+of that is what a reader meets first. What they meet is the trait's own opening line, which called it
+*"the third storage trait, alongside `OutboxStore` and its companions"* — an inventory of obligations,
+not a menu. Structurally optional, rhetorically mandatory. That sentence is the whole defect.
+
+Their proposal was two changes: say in adoption docs that a plain periodic re-read is a valid
+strategy with guidance on when versions are worth it, and make the trait visibly optional. Both
+accepted. Both turned out cheaper than they look — the second needs no restructuring at all, and the
+first is largely a *promotion* job, because the analysis already exists in
+`examples/todo-core/src/invalidation.rs` under "A staleness budget, not a poll schedule" and in
+`wiki/decisions/038-invalidation-delivery-in-the-trial.decision.md`. It was filed where an adopter
+would never look: inside a trial crate's module docs, and in a decision about internal sequencing.
+
+**A third point was added, and it is the one that would have caused the next bug.** "Periodic
+re-read is fine" is true and incomplete. `InvalidationRunner::stale` is generic over
+`CacheVersionStore`, so dropping the version store also drops the report that refetching an entity
+would discard unsent local work. Decision 014 exists because the source system had exactly that
+defect — `src/cache/runner/conflict.rs` describes its listener as one that "refetches eagerly and
+never consults the outbox". An adopter told only that periodic re-read is acceptable, who then
+removes the version store and re-reads on a timer, has rebuilt that defect faithfully, and its
+failure mode is silent loss of the user's unsent edits. The page says give it up on purpose, and
+shows how to keep the check without the runner: it needs the outbox, not versions, and
+`pending_batch` is inspection-only so an application can attribute pending work itself.
+
+Kept separate from all of that, because conflating them is the tempting mistake: **"do I need
+versions" and "must versions be durable" are different axes.** Decision 015 answers the second yes,
+and a page arguing the first could easily be read as licence for an in-memory version store — the
+machinery with none of the benefit.
+
+**One defect found while writing it.** `DEFAULT_CONFLICT_SCAN` was `pub` inside a private module, so
+nothing downstream could name it, while its twin `DEFAULT_BATCH_LIMIT` is reachable — and the
+constant's own doc argues the two match deliberately "so nobody assumes one of them is a
+coincidence", a comparison no external caller could make. Re-exported. The page tells an application
+skipping versions to bound its own conflict scan, so it has to be able to name the default.
+
+Pages affected: `wiki/compatibility/cache-versions-are-optional.compat.md`, `wiki/index.md`,
+`wiki/log.md`

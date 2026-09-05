@@ -9,7 +9,9 @@ use crate::error::Error;
 use crate::id::MutationId;
 use crate::record::{truncate_error, DeadLetterRecord, MutationIntent, OutboxRecord};
 use crate::scope::ScopeKey;
-use crate::store::{Disposition, OutboxStore, Outcome};
+use crate::store::{
+    CoalescingEnqueue, CoalescingPolicy, CoalescingRefusal, Disposition, OutboxStore, Outcome,
+};
 
 use super::{decode, quarantine_from, InMemoryStore, Row, StoreOp};
 
@@ -45,9 +47,87 @@ impl OutboxStore for InMemoryStore {
             attempts: 0,
             row: intent.row,
             last_error: None,
+            transport_started: false,
         };
         state.outbox.push(row);
         Ok(())
+    }
+
+    async fn enqueue_coalescing(
+        &self,
+        intent: MutationIntent,
+        policy: CoalescingPolicy,
+    ) -> Result<CoalescingEnqueue, Error> {
+        self.backend.check(StoreOp::EnqueueCoalescing)?;
+
+        let mutation_id = intent.mutation_id;
+        let raw_body = serde_json::to_string(&intent.body).map_err(Error::serialization)?;
+
+        // The borrow is confined to this block: the append path below awaits `enqueue`, and holding
+        // a `RefCell` across an await is how a re-entrant caller panics on an already-borrowed
+        // state. One borrow covers the match and the write, which is this backend's stand-in for
+        // "one transaction" — a durable backend owes the same, and owes it against `read_for_send`
+        // too.
+        let decision = {
+            let mut state = self.backend.state.borrow_mut();
+            match &intent.row {
+                None => Err(CoalescingRefusal::Unbound),
+                Some(row) => {
+                    let mut matches = state.outbox.iter_mut().filter(|candidate| {
+                        candidate.scope == self.scope
+                            && candidate.row.as_ref() == Some(row)
+                            && candidate.method == intent.method
+                            && candidate.path == intent.path
+                            && decode(candidate).is_ok()
+                    });
+                    match (matches.next(), matches.next()) {
+                        (None, _) => Err(CoalescingRefusal::MissingMatch),
+                        (Some(_), Some(_)) => Err(CoalescingRefusal::AmbiguousMatch),
+                        (Some(found), None) if found.transport_started => {
+                            Err(CoalescingRefusal::TransportStarted)
+                        }
+                        (Some(found), None) => {
+                            // The queued slot and its guard stay; everything describing the body is
+                            // the caller's newer one. `attempts` and `last_error` need no rule: a
+                            // row that is not transport-started has received no verdict.
+                            let kept = found
+                                .raw_mutation_id
+                                .parse()
+                                .expect("a decodable row has a parseable identifier");
+                            found.raw_body = raw_body;
+                            found.op = intent.op.clone();
+                            found.traceparent = intent.traceparent.clone();
+                            found.created_at = intent.created_at;
+                            Ok(kept)
+                        }
+                    }
+                }
+            }
+        };
+
+        let reason = match decision {
+            Ok(kept) => {
+                return Ok(CoalescingEnqueue::Replaced {
+                    kept,
+                    discarded: mutation_id,
+                })
+            }
+            Err(reason) => reason,
+        };
+
+        match policy {
+            // Every non-replacement case queues the write. A caller reaching for this policy has
+            // said it holds a precondition valid now, so appending is what `enqueue` would have
+            // done and is never worse than handing back an `Ok` for a dropped write.
+            CoalescingPolicy::AppendIfMissing => {
+                self.enqueue(intent).await?;
+                Ok(CoalescingEnqueue::Appended { mutation_id })
+            }
+            CoalescingPolicy::RequireExisting => Ok(CoalescingEnqueue::NotQueued {
+                mutation_id,
+                reason,
+            }),
+        }
     }
 
     /// Undecodable rows in this scope are skipped, not returned and not reported here. See the
@@ -65,6 +145,30 @@ impl OutboxStore for InMemoryStore {
         records.sort_by_key(OutboxRecord::order_key);
         records.truncate(limit);
         Ok(records)
+    }
+
+    /// The same read as `pending_batch`, plus the durable mark, under one borrow.
+    ///
+    /// Marked before the caller can send, never cleared: see the trait's contract for why the fact
+    /// is recorded ahead of the request instead of inferred from how the request failed.
+    async fn read_for_send(&self, limit: usize) -> Result<Vec<OutboxRecord>, Error> {
+        self.backend.check(StoreOp::ReadForSend)?;
+
+        let mut state = self.backend.state.borrow_mut();
+        let mut found: Vec<(usize, OutboxRecord)> = state
+            .outbox
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.scope == self.scope)
+            .filter_map(|(index, row)| decode(row).ok().map(|record| (index, record)))
+            .collect();
+        found.sort_by_key(|(_, record)| record.order_key());
+        found.truncate(limit);
+
+        for (index, _) in &found {
+            state.outbox[*index].transport_started = true;
+        }
+        Ok(found.into_iter().map(|(_, record)| record).collect())
     }
 
     /// Counts decodable rows only. An undecodable row is neither counted here nor visible through
@@ -175,6 +279,12 @@ impl OutboxStore for InMemoryStore {
 
         for (index, reason) in retained {
             state.outbox[index].attempts = state.outbox[index].attempts.saturating_add(1);
+            // A `Retain` *is* a verdict, and a verdict cannot exist without a request — so whoever
+            // applied this had the record sent, whether or not they went through `read_for_send`.
+            // `apply_outcomes` is public and this trait says a backend cannot assume the runner is
+            // its only caller, so the mark is set here too or a direct caller's queue stays
+            // coalescible after the server has seen it (conformance case 80).
+            state.outbox[index].transport_started = true;
             // Written in the same step as the increment, so the two always describe the same
             // verdict, and truncated because core states the bound and the store keeps it
             // (`wiki/decisions/033-last-error-on-the-record.decision.md`).

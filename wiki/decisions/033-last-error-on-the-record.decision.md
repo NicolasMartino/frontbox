@@ -5,7 +5,7 @@ Status: Accepted 2026-08-30; implemented in core and both durable backends 2026-
 Date: 2026-08-30
 Category: Storage Contract
 Scope: Whether the outbox record carries the last reason a verdict left it queued, in what form, and who bounds it.
-Sources: `src/record/mod.rs`, `src/store.rs`, `src/runner/mod.rs`
+Sources: `src/record/mod.rs`, `src/store/mod.rs`, `src/runner/mod.rs`
 Related: `wiki/decisions/017-bounded-retention.decision.md`, `wiki/decisions/027-dead-letter-reason.decision.md`, `wiki/decisions/026-replayable-preconditions.decision.md`, `wiki/references/open-decisions.reference.md`
 
 ## Decision
