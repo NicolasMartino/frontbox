@@ -43,6 +43,8 @@ pub struct IdbBackend {
     clock: Rc<dyn Clock>,
     /// Shared with every clone, so a factory can arm it and a store opened later still sees it.
     fail_next_apply: Rc<std::cell::Cell<bool>>,
+    #[cfg(feature = "testing")]
+    fail_next_migration: Rc<std::cell::Cell<bool>>,
 }
 
 impl std::fmt::Debug for IdbBackend {
@@ -95,6 +97,8 @@ impl IdbBackend {
             database: Rc::new(Handle(database)),
             clock: Rc::new(clock),
             fail_next_apply: Rc::new(std::cell::Cell::new(false)),
+            #[cfg(feature = "testing")]
+            fail_next_migration: Rc::new(std::cell::Cell::new(false)),
         })
     }
 
@@ -196,6 +200,16 @@ impl IdbBackend {
     #[cfg(feature = "testing")]
     pub(crate) fn arm_apply_failure(&self) {
         self.fail_next_apply.set(true);
+    }
+
+    #[cfg(feature = "testing")]
+    pub(crate) fn arm_migration_failure(&self) {
+        self.fail_next_migration.set(true);
+    }
+
+    #[cfg(feature = "testing")]
+    pub(crate) fn take_migration_failure(&self) -> bool {
+        self.fail_next_migration.replace(false)
     }
 
     /// Consume the armed failure, if there is one.

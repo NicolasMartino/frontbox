@@ -20,15 +20,13 @@ pub const DEFAULT_BATCH_LIMIT: usize = 100;
 
 mod config;
 mod drain;
-mod exclusion;
+pub(crate) mod exclusion;
 mod report;
 
 pub use drain::{DrainEnd, DrainReport};
 pub use report::{
     Anomaly, AnomalyKind, Drained, DrainedAs, SyncOutcomeCounts, SyncPass, SyncReport,
 };
-
-use exclusion::DrainClaim;
 
 /// Runs sync passes against a store and a transport.
 ///
@@ -87,23 +85,7 @@ where
     /// See that variant for what a pass which never read differs in from one that read and then
     /// found the network gone.
     pub async fn sync_once(&self) -> Result<SyncReport, Error> {
-        // `_claim` rather than `_`: a bare underscore drops the guard here and frees the scope
-        // before the pass has run.
-        let Some(_claim) = DrainClaim::try_acquire(self.store.scope()) else {
-            return Ok(SyncReport::ended(SyncPass::AlreadyRunning));
-        };
-        // The other half of the same exclusion, and it has to be the backend's: `_claim` covers
-        // this realm, and a second browser tab is a realm this one cannot see at all. A backend
-        // with one realm by construction grants immediately, so this costs nothing where it buys
-        // nothing (`wiki/decisions/031-cross-realm-single-flight.decision.md`).
-        //
-        // Ordered after the in-process claim deliberately. The cheap, always-correct check runs
-        // first, so a second pass in *this* realm never reaches out to a lock manager to be told
-        // what a `HashSet` already knew.
-        //
-        // `_lease` rather than `_`, for the reason `_claim` is: a bare underscore would release it
-        // here, before the pass it exists to protect has run.
-        let Some(_lease) = self.store.claim_drain().await? else {
+        let Some(_lease) = crate::DrainLease::claim(&self.store).await? else {
             return Ok(SyncReport::ended(SyncPass::AlreadyRunning));
         };
         self.run().await

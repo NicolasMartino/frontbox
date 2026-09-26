@@ -182,6 +182,7 @@ pub use runner::{
 pub use scope::ScopeKey;
 pub use store::{
     CoalescingEnqueue, CoalescingPolicy, CoalescingRefusal, DeadLetterStore, Disposition,
-    DrainLease, OutboxStore, Outcome, QuarantineStore, RowStore,
+    DrainLease, MigrationReport, MigrationStore, MutationPayload, OutboxStore, Outcome,
+    PendingMigration, QuarantineStore, RowStore, StorageMigration,
 };
 pub use transport::SyncTransport;

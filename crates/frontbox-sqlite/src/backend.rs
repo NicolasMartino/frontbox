@@ -23,6 +23,8 @@ pub struct SqliteBackend {
     ///
     /// Shared with every clone, so a factory can arm it and a store opened later still sees it.
     fail_next_apply: Rc<Cell<bool>>,
+    #[cfg(feature = "testing")]
+    fail_next_migration: Rc<Cell<bool>>,
 }
 
 impl std::fmt::Debug for SqliteBackend {
@@ -66,6 +68,8 @@ impl SqliteBackend {
             connection: Rc::new(RefCell::new(connection)),
             clock: Rc::new(clock),
             fail_next_apply: Rc::new(Cell::new(false)),
+            #[cfg(feature = "testing")]
+            fail_next_migration: Rc::new(Cell::new(false)),
         })
     }
 
@@ -108,6 +112,16 @@ impl SqliteBackend {
     #[cfg(feature = "testing")]
     pub(crate) fn arm_apply_failure(&self) {
         self.fail_next_apply.set(true);
+    }
+
+    #[cfg(feature = "testing")]
+    pub(crate) fn arm_migration_failure(&self) {
+        self.fail_next_migration.set(true);
+    }
+
+    #[cfg(feature = "testing")]
+    pub(crate) fn take_migration_failure(&self) -> bool {
+        self.fail_next_migration.replace(false)
     }
 
     /// Consume the armed failure, if there is one.

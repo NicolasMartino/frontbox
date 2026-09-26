@@ -235,3 +235,24 @@ macro_rules! __frontbox_emit_cases {
         }
     };
 }
+
+/// The shared list of atomic storage migration cases.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __frontbox_migration_suite {
+    (run: { $($run:tt)* }, attr: [$($attr:tt)*], factory: $factory:expr $(,)?) => {
+        $crate::__frontbox_emit_cases! {
+            run: { $($run)* }, attr: [$($attr)*], factory: $factory,
+            cases: [
+                case_83_migration_preserves_order_and_audit,
+                case_84_migration_failure_rolls_back_every_store,
+                case_85_migration_is_scoped_and_keeps_quarantine,
+                case_86_migration_rekeys_without_reordering,
+                case_87_migration_and_drain_share_exclusion,
+                case_88_migration_rejects_unknown_and_corrupt_records,
+                case_89_migration_write_failure_rolls_back,
+                case_90_migration_keeps_unacknowledged_transport_start,
+            ]
+        }
+    };
+}

@@ -43,11 +43,11 @@ thread_local! {
 /// crate targets — a Dioxus `use_future` is dropped whenever its component re-renders — and a slot
 /// released only on the success path would leave every later pass reporting
 /// [`SyncPass::AlreadyRunning`](super::SyncPass) forever.
-pub(super) struct DrainClaim(ScopeKey);
+pub(crate) struct DrainClaim(ScopeKey);
 
 impl DrainClaim {
     /// Claim `scope`, or `None` if a drain already holds it.
-    pub(super) fn try_acquire(scope: &ScopeKey) -> Option<Self> {
+    pub(crate) fn try_acquire(scope: &ScopeKey) -> Option<Self> {
         DRAINING
             .try_with(|slots| slots.borrow_mut().insert(scope.clone()))
             // Thread-local storage is already torn down, so nothing on this thread can still be

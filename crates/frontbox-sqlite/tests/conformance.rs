@@ -340,3 +340,9 @@ fn opening_a_newer_database_does_not_move_the_version_backwards() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+frontbox::frontbox_migration_tests! {
+    #[test]
+    factory: SqliteFactory::new(),
+    block_on: pollster::block_on,
+}

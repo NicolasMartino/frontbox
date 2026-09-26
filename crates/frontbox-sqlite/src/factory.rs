@@ -102,3 +102,9 @@ impl FaultInjection for SqliteFactory {
         self.backend.arm_apply_failure();
     }
 }
+
+impl frontbox::testing::MigrationFaultInjection for SqliteFactory {
+    async fn fail_next_migration(&self) {
+        self.backend.arm_migration_failure();
+    }
+}

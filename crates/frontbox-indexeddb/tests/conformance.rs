@@ -141,3 +141,8 @@ async fn the_drain_lock_is_taken_and_released() {
     assert_eq!(second.counts.applied, 1);
     assert_eq!(runner.store().pending_count().await.expect("count"), 0);
 }
+
+frontbox::frontbox_migration_tests_async! {
+    #[wasm_bindgen_test::wasm_bindgen_test]
+    factory: conformance_factory().await,
+}

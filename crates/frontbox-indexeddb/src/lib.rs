@@ -32,6 +32,7 @@ mod backend;
 mod coalescing;
 mod convert;
 mod locks;
+mod migration;
 mod request;
 mod rows;
 mod scan;

@@ -168,6 +168,49 @@ async fn answer(promise: Promise) -> bool {
         .expect("every answer is a boolean")
 }
 
+struct Unchanged;
+
+impl frontbox::StorageMigration for Unchanged {
+    fn pending(
+        &self,
+        _: &frontbox::OutboxRecord,
+    ) -> Result<Option<frontbox::PendingMigration>, Error> {
+        Ok(None)
+    }
+    fn dead_letter(
+        &self,
+        _: &frontbox::DeadLetterRecord,
+    ) -> Result<Option<frontbox::MutationPayload>, Error> {
+        Ok(None)
+    }
+    fn row(&self, _: &frontbox::StoredRow) -> Result<Option<serde_json::Value>, Error> {
+        Ok(None)
+    }
+}
+
+/// A migration must stand down while a separate realm owns the queue's drain lock.
+#[wasm_bindgen_test::wasm_bindgen_test]
+async fn another_realm_draining_stops_a_storage_migration() {
+    use frontbox::MigrationStore;
+    start_realm();
+    let key = scope("migration-cross-realm");
+    let (_factory, store) = queued("frontbox-migration-realms", &key, 1).await;
+    let before = store.pending_batch(10).await.expect("before");
+    assert!(answer(realm_takes_lock(&lock_name(&key))).await);
+    assert_eq!(store.migrate(&Unchanged).await.expect("busy"), None);
+    assert_eq!(store.pending_batch(10).await.expect("after"), before);
+    assert!(answer(realm_drops_lock()).await);
+    assert!(store
+        .migrate(&Unchanged)
+        .await
+        .expect("migration")
+        .is_some());
+    assert!(
+        answer(realm_could_take_lock(&lock_name(&key))).await,
+        "migration releases the Web Lock"
+    );
+}
+
 /// Queue `count` mutations under `key`, in a database this file owns.
 ///
 /// The factory comes back with the store and both tests hold it, because `IdbFactory::drop` closes

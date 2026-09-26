@@ -300,3 +300,23 @@ macro_rules! frontbox_blocking_only_tests {
 }
 
 mod suites;
+
+/// Emit atomic storage migration cases as blocking tests.
+#[macro_export]
+macro_rules! frontbox_migration_tests {
+    ($(#[$attr:meta])* factory: $factory:expr, block_on: $block_on:path $(,)?) => {
+        $crate::__frontbox_migration_suite! {
+            run: { block_on: $block_on }, attr: [$(#[$attr])*], factory: $factory,
+        }
+    };
+}
+
+/// Emit atomic storage migration cases as asynchronous browser tests.
+#[macro_export]
+macro_rules! frontbox_migration_tests_async {
+    ($(#[$attr:meta])* factory: $factory:expr $(,)?) => {
+        $crate::__frontbox_migration_suite! {
+            run: { asynchronous }, attr: [$(#[$attr])*], factory: $factory,
+        }
+    };
+}

@@ -36,6 +36,8 @@ pub use crate::clock::ManualClock;
 /// An operation that [`InMemoryBackend::fail_next`] can be told to fail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StoreOp {
+    /// [`MigrationStore::migrate`](crate::MigrationStore::migrate)
+    Migrate,
     /// [`OutboxStore::enqueue`](crate::store::OutboxStore::enqueue)
     Enqueue,
     /// [`OutboxStore::pending_batch`](crate::store::OutboxStore::pending_batch)
@@ -344,6 +346,7 @@ fn quarantine_from(row: &Row, reason: String, quarantined_at: i64) -> Quarantine
 
 #[cfg(feature = "testing")]
 mod factory;
+mod migration;
 mod outbox;
 mod reads;
 mod rows;

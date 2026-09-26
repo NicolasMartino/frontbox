@@ -98,3 +98,9 @@ mod async_shape {
         factory: InMemoryFactory::new(),
     }
 }
+
+frontbox::frontbox_migration_tests! {
+    #[test]
+    factory: InMemoryFactory::new(),
+    block_on: pollster::block_on,
+}

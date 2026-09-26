@@ -31,6 +31,7 @@
 mod backend;
 mod coalescing;
 mod convert;
+mod migration;
 mod rows;
 mod schema;
 mod store;

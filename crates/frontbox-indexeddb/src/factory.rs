@@ -156,7 +156,7 @@ impl StoreFactory for IdbFactory {
 }
 
 impl IdbFactory {
-    /// Write an object into the outbox that is not an [`OutboxRow`] at all.
+    /// Write an object into the outbox that is not an `OutboxRow` at all.
     ///
     /// # Why this is here and not a [`CorruptKind`]
     ///
@@ -222,5 +222,11 @@ impl VersionStoreFactory for IdbFactory {
 impl FaultInjection for IdbFactory {
     async fn fail_next_apply_outcomes(&self) {
         self.backend.arm_apply_failure();
+    }
+}
+
+impl frontbox::testing::MigrationFaultInjection for IdbFactory {
+    async fn fail_next_migration(&self) {
+        self.backend.arm_migration_failure();
     }
 }

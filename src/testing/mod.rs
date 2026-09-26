@@ -175,6 +175,13 @@ pub trait FaultInjection: StoreFactory {
     async fn fail_next_apply_outcomes(&self);
 }
 
+/// A factory that can abort a storage migration after its writes, before commit.
+#[allow(async_fn_in_trait)]
+pub trait MigrationFaultInjection: StoreFactory {
+    /// Make the next migration roll back after all its writes were issued.
+    async fn fail_next_migration(&self);
+}
+
 /// Build a scope key, panicking on an invalid one.
 ///
 /// # Panics

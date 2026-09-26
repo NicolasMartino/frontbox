@@ -12,55 +12,20 @@ use crate::record::{MutationIntent, OutboxRecord};
 use crate::scope::ScopeKey;
 
 mod coalescing;
+mod lease;
+mod migration;
 mod outcome;
 mod rows;
 mod terminal;
 
 pub use coalescing::{CoalescingEnqueue, CoalescingPolicy, CoalescingRefusal};
+pub use lease::DrainLease;
+pub use migration::{
+    MigrationReport, MigrationStore, MutationPayload, PendingMigration, StorageMigration,
+};
 pub use outcome::{Disposition, Outcome};
 pub use rows::RowStore;
 pub use terminal::{DeadLetterStore, QuarantineStore};
-
-/// Exclusive drain rights for one scope, held for the length of one pass.
-///
-/// Released on drop, whatever ends the pass — returning, erroring, or being cancelled. Core never
-/// looks inside: a backend puts whatever it needs to release in the closure, and a backend with
-/// nothing to release supplies none.
-pub struct DrainLease(Option<Box<dyn FnOnce()>>);
-
-impl DrainLease {
-    /// A lease with nothing to release.
-    ///
-    /// What the default [`claim_drain`](OutboxStore::claim_drain) hands back, and what a
-    /// single-realm backend should return.
-    #[must_use]
-    pub fn granted() -> Self {
-        Self(None)
-    }
-
-    /// A lease that runs `release` when it is dropped.
-    #[must_use]
-    pub fn held(release: impl FnOnce() + 'static) -> Self {
-        Self(Some(Box::new(release)))
-    }
-}
-
-impl Drop for DrainLease {
-    fn drop(&mut self) {
-        if let Some(release) = self.0.take() {
-            release();
-        }
-    }
-}
-
-impl std::fmt::Debug for DrainLease {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self.0 {
-            Some(_) => "DrainLease(held)",
-            None => "DrainLease(granted)",
-        })
-    }
-}
 
 /// The pending mutation queue.
 ///

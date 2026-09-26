@@ -46,6 +46,12 @@ argued and tested rather than assumed. Divergences from the source carry that ob
 
 ## Catalog
 
+- [Atomic storage migration](apis/atomic-storage-migration.api.md) — Active;
+  local, unpublished additive API. Scoped transactional upgrades preserve queue
+  order and rejection history; memory, SQLite and browser IndexedDB proof,
+  including rollback and cross-realm exclusion. Platform verification limits
+  are recorded on the API page.
+
 | Path | Status | Summary |
 | --- | --- | --- |
 | [specs/source-frontend-cache-architecture.spec.md](specs/source-frontend-cache-architecture.spec.md) | Active | Source-backed architecture spec for RepForge's frontend cache: what the source system does, verified against the copied corpus. |

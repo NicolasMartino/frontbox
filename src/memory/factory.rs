@@ -109,3 +109,9 @@ impl crate::testing::FaultInjection for InMemoryFactory {
         self.backend.fail_next(StoreOp::ApplyOutcomes);
     }
 }
+
+impl crate::testing::MigrationFaultInjection for InMemoryFactory {
+    async fn fail_next_migration(&self) {
+        self.backend.fail_next(StoreOp::Migrate);
+    }
+}
