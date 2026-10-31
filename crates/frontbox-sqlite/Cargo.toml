@@ -14,7 +14,7 @@ frontbox = { path = "../.." }
 # `!Send` rather than pretending otherwise.
 #
 # `bundled` so the suite does not depend on whatever libsqlite3 a machine happens to ship.
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 serde_json = "1"
 
 [features]

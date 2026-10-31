@@ -4212,3 +4212,14 @@ skipping versions to bound its own conflict scan, so it has to be able to name t
 
 Pages affected: `wiki/compatibility/cache-versions-are-optional.compat.md`, `wiki/index.md`,
 `wiki/log.md`
+
+## [2026-10-31] maintain | frontbox-sqlite moves to rusqlite 0.32
+
+**`rusqlite 0.32`, so one `libsqlite3-sys` serves an application that also links SQLite.** RepForge's
+workspace links `libsqlite3-sys 0.30` through `rusqlite 0.32` and `sqlx 0.8.6`, and `links =
+"sqlite3"` let only one version in, so it could not depend on this crate at all — the collision the
+2026-08-30 SQLite backend entry said a future upgrade would hit. `0.32` is the line `0.30` belongs to. No API this
+crate uses changed, and nothing else did: the lock moved `examples/todo-server`'s `sqlx` from `0.8.0`
+to `0.8.6`, which is what lets both sides agree.
+
+Pages affected: `crates/frontbox-sqlite/Cargo.toml`, `Cargo.lock`, `wiki/log.md`
