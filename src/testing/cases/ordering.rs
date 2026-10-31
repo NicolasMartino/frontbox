@@ -15,6 +15,9 @@ pub async fn case_10_pending_batch_respects_limit<F: StoreFactory>(
     assert_eq!(store.pending_batch(2).await?.len(), 2);
     assert_eq!(store.pending_batch(5).await?.len(), 5);
     assert_eq!(store.pending_batch(50).await?.len(), 5);
+    // The largest limit is how a caller asks for the whole queue: a bound, never an allocation.
+    assert_eq!(store.pending_batch(usize::MAX).await?.len(), 5);
+    assert_eq!(store.read_for_send(usize::MAX).await?.len(), 5);
 
     let runner = SyncRunner::new(
         store,

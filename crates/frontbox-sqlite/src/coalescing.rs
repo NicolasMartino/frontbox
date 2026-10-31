@@ -164,8 +164,8 @@ impl SqliteStore {
         // The same paging loop `pending_batch` runs, and for the same reason: corrupt rows are
         // skipped after decoding, so one `LIMIT` window can come back short while the queue holds
         // plenty of sendable work.
-        let mut records: Vec<OutboxRecord> = Vec::with_capacity(limit);
-        let mut marks: Vec<i64> = Vec::with_capacity(limit);
+        let mut records: Vec<OutboxRecord> = Vec::new();
+        let mut marks: Vec<i64> = Vec::new();
         let mut after_seq: i64 = 0;
         'paging: loop {
             let page = raw_page_on(&transaction, &self.scope, after_seq, limit)?;

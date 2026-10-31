@@ -147,8 +147,8 @@ impl IdbStore {
         // makes `seq` the replay order rather than an accident of insertion.
         rows.sort_by_key(|entry| entry.row.seq.unwrap_or_default());
 
-        let mut records: Vec<OutboxRecord> = Vec::with_capacity(limit);
-        let mut marked: Vec<OutboxRow> = Vec::with_capacity(limit);
+        let mut records: Vec<OutboxRecord> = Vec::new();
+        let mut marked: Vec<OutboxRow> = Vec::new();
         for entry in rows {
             if records.len() == limit {
                 break;

@@ -64,7 +64,7 @@ impl OutboxStore for SqliteStore {
         if limit == 0 {
             return Ok(Vec::new());
         }
-        let mut records: Vec<OutboxRecord> = Vec::with_capacity(limit);
+        let mut records: Vec<OutboxRecord> = Vec::new();
         // `seq` is `AUTOINCREMENT` and so starts at 1; nothing is skipped by starting below it.
         let mut after_seq: i64 = 0;
         loop {
